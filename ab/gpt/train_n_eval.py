@@ -45,7 +45,7 @@ ds_config = os.path.join("conf","deepspeed_config.json")
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-e', '--skip', type=int, default=-1,
+    parser.add_argument('-s', '--skip', type=int, default=-1,
                         help="Number of epoches to skip the generation.")
     parser.add_argument('-p', '--peft', type=str, default=None,
                         help="Path to saved lora layers.")

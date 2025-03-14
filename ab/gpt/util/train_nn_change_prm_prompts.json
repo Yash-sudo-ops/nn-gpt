@@ -1,0 +1,21 @@
+{
+    "improvement_classification_codeonly":{
+        "type":"change_parameters",
+        "is_generation":false,
+        "input_list":[{"para":"nn_code","value":"nn_code"},{"para":"accuracy","value":"accuracy"}],
+        "addon_list":[{"para":"addon_accuracy","value":"accuracy"}],
+        "task":"img-classification",
+        "addon_task":"img-classification",
+        "single_row":false,
+        "no_repeat":[],
+        "keep_same":[],
+        "prompts":[
+            "Change the layers in the following implementation to improve accuracy from {accuracy} to {addon_accuracy} on image classification tasks.",
+            "Strictly modify ONLY the layers in the code and ***STRICTLY DO NOT INTRODUCE NEW METHODS OR PARAMETERS***",
+            "You should answer not only the class you modified but with ***FULL CODES INCLUDING EVERYTHING (Other classes, etc.) NOT CHANGED***",
+            "You have to reply will full codes, don't be afraid of actually reducing the accuracy.",
+            "***Strictly check and make sure at least one layer being modified.***",
+            "```\n{nn_code}\n```"
+        ]
+    }
+}

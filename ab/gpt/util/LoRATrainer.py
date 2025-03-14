@@ -61,12 +61,13 @@ def create_peft_config(modules):
     :param modules: Names of the modules to apply Lora to
     """
     config = LoraConfig(
-        r=16,  # dimension of the updated matrices
+        r=32,  # dimension of the updated matrices
         lora_alpha=64,  # parameter for scaling
         target_modules=modules,
         lora_dropout=0.1,  # dropout probability for layers
         bias="none",
         task_type="CAUSAL_LM",
+        use_dora=True
     )
 
     return config
@@ -78,12 +79,14 @@ class LoRATrainer:
                  tokenizer: PreTrainedTokenizerBase,
                  training_args: TrainingArguments,
                  access_token=None,
-                 peft_config=None
+                 peft_config=None,
+                 already_peft=False
                  ):
         self.model = model
         self.tokenizer = tokenizer
         self.training_args = training_args
         self.access_token = access_token
+        self.already_peft = already_peft
         if peft_config is None:
             modules = find_all_linear_names(self.model)
             self.peft_config = create_peft_config(modules)
@@ -91,12 +94,15 @@ class LoRATrainer:
             self.peft_config = peft_config
 
     def train(self, dataset: Dataset, output_dir: str):
-        # Prepare the model
-        self.model.gradient_checkpointing_enable()
-        self.model = prepare_model_for_kbit_training(self.model)
+        if not self.already_peft:
+            # We don't want multiple LoRA Adapters. 
+            # The `isinstance()` cannot recognize the class name `PeftModel` for it's hidden.
 
-        self.model = get_peft_model(self.model, self.peft_config)
-        self.model.config.use_cache = False
+            # Prepare the model
+            self.model.gradient_checkpointing_enable()
+            self.model = prepare_model_for_kbit_training(self.model)
+            self.model = get_peft_model(self.model, self.peft_config)
+            self.model.config.use_cache = False
 
         # Split The dataset
         dataset = dataset.train_test_split(test_size=0.1)

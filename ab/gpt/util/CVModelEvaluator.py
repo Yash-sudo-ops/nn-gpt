@@ -4,7 +4,7 @@ import ab.nn.api as api
 from ab.nn.util.Util import read_py_file_as_string
 
 class CVModelEvaluator:
-    def __init__(self, model_source_package: str, task='img-classification', dataset='cifar-10', metric='acc', prm=None, save_to_db=False):
+    def __init__(self, model_source_package: str, task='img-classification', dataset='cifar-10', metric='acc', prm=None, save_to_db=False, prefix = None, save_path = None):
         """
         Evaluates a given model on a specified dataset for classification
         :param model_source_package: The package name of the model to evaluate
@@ -23,6 +23,8 @@ class CVModelEvaluator:
         self.metric = metric
         self.prm = prm
         self.save_to_db = save_to_db
+        self.prefix = prefix
+        self.save_path = save_path
 
     # def evaluate(self, num_epochs, batch_size=4):
     #     train_loader = torch.utils.data.DataLoader(
@@ -82,7 +84,7 @@ class CVModelEvaluator:
     def evaluate(self):
         os.listdir(self.model_package)
         code = read_py_file_as_string(self.model_package+'/code.py')
-        res = api.check_nn(code, self.task, self.dataset, self.metric, self.prm, self.save_to_db)
+        res = api.check_nn(code, self.task, self.dataset, self.metric, self.prm, self.save_to_db, self.prefix, self.save_path)
         return res
         
     def get_args(self):

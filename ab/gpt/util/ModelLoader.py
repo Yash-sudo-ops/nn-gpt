@@ -117,5 +117,5 @@ class ModelLoader:
             if max_length:
                 break
         if not max_length:
-            max_length = 1024
+            max_length = 4096
         return max_length

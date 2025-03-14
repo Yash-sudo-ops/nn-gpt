@@ -1,0 +1,49 @@
+{
+    "improvement_classification_codeonly":{
+        "comment":[
+            "single_row is used for handling legency prompts in test_prompt.json.",
+            "para: where you fill in content, value: where data come from (colum key in api.data() DataFrame).",
+            "task(only in addon_list): which task the additional content come from.",
+            "comment: explain the usage of this file"
+        ],
+        "input_list":[{"para":"nn_code","value":"nn_code"}],
+        "addon_list":[],
+        "task":"img-classification",
+        "addon_task":"",
+        "single_row":false,
+        "prompts":[
+            "Define 2 `nn.Conv2d()`s a neighboring pair, when there are only non-Conv2d layers between these 2 `nn.Conv2d()`s.",
+            "Your task is to randomly pick and modify 1 or 2 neighboring pair of `nn.Conv2d()` according to requirements below and return ONLY the full result.",
+            "1.For 2 `nn.Conv2d()` of each picked neighboring pair, change the out-channel of the former `nn.Conv2d()` and the in-channel of the following `nn.Conv2d()` to a same new integer.",
+            "2.Directly modify the numbers in the code and ***STRICTLY DO NOT INTRODUCE NEW METHODS OR PARAMETERS***.",
+            "3.Never change anything else in the code except changes required according to the requirements above.",
+            "4.Do not pick the first neighboring pair, pick the layers randomly.",
+            "5.You should answer not only the class you modified but with ***FULL CODES INCLUDING EVERYTHING (Other classes, etc.) NOT CHANGED***.",
+            "6.***If you can not find any neighboring pair of `nn.Conv2d()` to modify, randomly pick 2 digits in the code and change them into a new values.***",
+            "Now, below is the code for you to change according to the requirement:",
+            "```\n{nn_code}\n```"
+        ]
+    },
+    "improvement_classification_chgNumber":{
+        "comment":[
+            "single_row is used for handling legency prompts in test_prompt.json.",
+            "para: where you fill in content, value: where data come from (colum key in api.data() DataFrame).",
+            "task(only in addon_list): which task the additional content come from.",
+            "comment: explain the usage of this file"
+        ],
+        "input_list":[{"para":"nn_code","value":"nn_code"}],
+        "addon_list":[],
+        "task":"img-classification",
+        "addon_task":"",
+        "single_row":false,
+        "prompts":[
+            "Your task is to randomly pick 2 or 4 integer numbers in the code and change them into new values, with:",
+            "1.***STRICTLY DO NOT INTRODUCE NEW METHODS OR PARAMETERS***.",
+            "2.Make sure you have made the modification, and the code shoule be executable after your modification",
+            "3.Pick the numbers randomly.",
+            "4.You should answer not only the class you modified but with ***FULL CODES INCLUDING EVERYTHING (Other classes, etc.) NOT CHANGED***.",
+            "Below is the code for you to change according to the requirements above:",
+            "```\n{nn_code}\n```"
+        ]
+    }
+}

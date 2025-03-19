@@ -16,10 +16,10 @@
             "Your task is to randomly pick and modify 1 or 2 neighboring pair of `nn.Conv2d()` according to requirements below and return ONLY the full result.",
             "1.For 2 `nn.Conv2d()` of each picked neighboring pair, change the out-channel of the former `nn.Conv2d()` and the in-channel of the following `nn.Conv2d()` to a same new integer.",
             "2.Directly modify the numbers in the code and ***STRICTLY DO NOT INTRODUCE NEW METHODS OR PARAMETERS***.",
-            "3.Never change anything else in the code except changes required according to the requirements above.",
-            "4.Do not pick the first neighboring pair, pick the layers randomly.",
-            "5.You should answer not only the class you modified but with ***FULL CODES INCLUDING EVERYTHING (Other classes, etc.) NOT CHANGED***.",
-            "6.***If you can not find any neighboring pair of `nn.Conv2d()` to modify, randomly pick 2 digits in the code and change them into a new values.***",
+            "3.Do not pick the first neighboring pair, pick the layers randomly.",
+            "4.You should answer not only the class you modified but with ***FULL CODES INCLUDING EVERYTHING (Other classes, etc.) NOT CHANGED***.",
+            "5.***If you can not find any neighboring pair of `nn.Conv2d()` to modify, randomly pick 2 digits in the code and change them into a new values.***",
+            "6.Never change anything else in the code except changes required according to the requirements above.",
             "Now, below is the code for you to change according to the requirement:",
             "```\n{nn_code}\n```"
         ]

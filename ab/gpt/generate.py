@@ -93,11 +93,11 @@ def main():
             code_file = Path(out_path + "synth_cv_models/B" + str(B_index) + "/code.py")
             inputs = tokenizer.apply_chat_template([{ 'role': 'user', 'content': prompt},], add_generation_prompt=True, return_tensors="pt").to(model.device)
             # tokenizer.eos_token_id is the id of <｜end▁of▁sentence｜>  token
-            outputs = model.generate(inputs, max_new_tokens=10000, do_sample=False if epoch==0 else True, top_k=50, top_p=0.95, num_return_sequences=1, eos_token_id=tokenizer.eos_token_id)
+            outputs = model.generate(inputs, max_new_tokens=10000, do_sample=True, temperature=0.6, top_k=50, top_p=0.95, num_return_sequences=1, eos_token_id=tokenizer.eos_token_id)
             out = tokenizer.decode(outputs[0][len(inputs[0]):], skip_special_tokens=True)
             print("Response Available!")
             if out.count("```")<2:
-                print(f"[INFO]Not exactly 2 \"```\", got {out.count("```")}. Skip to avoid infinite loop.")
+                print(f"[INFO]Lesser than 2 \"```\", got {out.count('```')}. Skip to avoid infinite loop.")
                 continue
             x = re.search("```((.|\s)*?)```", out)
             if x:

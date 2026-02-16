@@ -6,6 +6,20 @@ import time
 
 import ab.nn.api as lemur
 from ab.nn.api import JoinConf
+import time
+import functools
+
+
+def measure_time(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        result = func(*args, **kwargs)
+        end = time.perf_counter()
+        print(f"{func.__name__} took {end - start:.4f} seconds")
+        return result
+
+    return wrapper
 
 
 def assert_columns(df, required):
@@ -13,6 +27,7 @@ def assert_columns(df, required):
     assert not missing, f"Missing columns: {missing}"
 
 
+@measure_time
 def test_legacy_pairwise_schema():
     """
     Legacy behavior: 2-model join, wide schema.
@@ -20,14 +35,13 @@ def test_legacy_pairwise_schema():
     """
     conf = JoinConf(
         num_joint_nns=2,
+        same_columns=('epoch', 'metric', 'dataset', 'task'),
         diff_columns=("nn",),
-        task="img-classification",
-        dataset="cifar-10",
-        metric="acc",
-        similarity_mode="none",
+        enhance_nn=True,
+        # similarity_mode="none",
     )
 
-    df = lemur.data(sql=conf, max_rows=50, include_nn_stats=False)
+    df = lemur.data(sql=conf, include_nn_stats=True, task="img-classification", dataset="cifar-10", metric="acc")
 
     required = [
         "nn", "nn_code", "accuracy", "prm_id",
@@ -40,6 +54,7 @@ def test_legacy_pairwise_schema():
     print(df[["nn", "accuracy", "nn_2", "accuracy_2"]].head())
 
 
+@measure_time
 def test_sql_variable_n():
     """
     NEW functionality:
@@ -69,7 +84,7 @@ def test_sql_variable_n():
     print(df[["nn", "accuracy"]])
 
 
-
+@measure_time
 def test_otf_anchor_band():
     conf = JoinConf(
         num_joint_nns=5,
@@ -89,6 +104,8 @@ def test_otf_anchor_band():
     print("[PASS] OTF anchor band")
     print(df[["nn", "accuracy", "anchor_jaccard"]])
 
+
+@measure_time
 def test_legacy_performance_smoke():
     """
     Performance smoke test for legacy path.
@@ -112,6 +129,8 @@ def test_legacy_performance_smoke():
     # Soft sanity guard 
     assert dt < 120, "Legacy query unexpectedly slow"
 
+
+@measure_time
 def test_sql_variable_n_performance_smoke():
     """
     Performance smoke test for SQL-only variable-N path.
@@ -139,6 +158,8 @@ def test_sql_variable_n_performance_smoke():
     assert df["nn"].is_unique, "Duplicate nn entries detected"
 
     assert dt < 30, "SQL variable-N query unexpectedly slow"
+
+
 def main():
     print("LEMUR / NNGPT integration tests")
 
@@ -154,4 +175,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

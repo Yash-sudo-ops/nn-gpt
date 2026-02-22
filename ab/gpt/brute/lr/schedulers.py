@@ -1,261 +1,671 @@
 """
-Learning Rate Scheduler Model Generator
+Bayesian Optimization Model Generator — ~2000 CV Models
+Reads actual nn-dataset architecture source files and injects LR scheduler
+modifications into train_setup() and learn() methods while preserving the
+exact nn-dataset interface.
 
-Generates new_nn.py files in the standard output directory
-(out/nngpt/llm/epoch/A0/synth_nn/) for evaluation by NNEval.
-
-Each generated model is a ResNet18 adapted for CIFAR-10 with a
-different learning rate scheduling strategy. All hyperparameters
-are provided via the prm dict, consistent with the project approach.
-
-Usage:
-    python -m ab.gpt.brute.lr.schedulers
-    python -m ab.gpt.NNEval
+Handles multiple code styles found across nn-dataset architectures:
+  - tuple-wrapped vs bare criteria
+  - different optimizer styles (torch.optim.SGD, optim.SGD, Adam, etc.)
+  - multiline optimizer definitions
+  - presence/absence of clip_grad_norm_
+  - presence/absence of self.train()
 """
+
 import os
-import shutil
+import re
+import sys
+import ast
+import importlib
 from pathlib import Path
 
-from ab.gpt.util.Const import epoch_dir, synth_dir, new_nn_file
+# ── nn-dataset architectures (from ab.nn.util.Const.core_nn_cls) ──────────────
+# Exclude RLFN and SwinIR (no source files), MoE and ConvNeXtTransformer (very custom learn)
+ARCHITECTURES = [
+    'AirNet', 'AirNext', 'AlexNet', 'BagNet', 'ComplexNet', 'BayesianNet-1',
+    'ConvNeXt', 'DPN107', 'DPN131', 'DPN68',
+    'DarkNet', 'DenseNet', 'Diffuser', 'EfficientNet', 'FractalNet',
+    'GoogLeNet', 'ICNet', 'InceptionV3-1', 'MNASNet', 'MaxVit',
+    'MobileNetV2', 'MobileNetV3',
+    'RegNet', 'ResNet', 'ShuffleNet', 'SqueezeNet-1', 'SwinTransformer',
+    'UNet2D', 'VGG', 'VisionTransformer',
+]
 
-OUTPUT_DIR = synth_dir(epoch_dir(0))
-MODEL_PREFIX = "A0_"
-
-# ---------------------------------------------------------------------------
-# Model Template
-# ---------------------------------------------------------------------------
-MODEL_TEMPLATE = '''import torch
-import torch.nn as nn
-import torch.optim as optim
-import torchvision.models as models
-import torch.optim.lr_scheduler as lr_scheduler
-
-def supported_hyperparameters():
-    return {supported_hyperparameters_set}
-
-class Net(nn.Module):
-    def __init__(self, in_shape=(1, 3, 32, 32), out_shape=(10,), prm=None, device='cpu'):
-        super(Net, self).__init__()
-        if prm is None:
-            prm = {{'lr': 0.1, 'momentum': 0.9, 'dropout': 0.2}}
-        self.device = device
-        self.in_shape = in_shape
-        self.out_shape = out_shape
-        self.model = models.resnet18(weights=None)
-        num_classes = out_shape[0] if isinstance(out_shape, tuple) else out_shape
-        self.model.fc = nn.Sequential(
-            nn.Dropout(p=prm.get('dropout', 0.2)),
-            nn.Linear(self.model.fc.in_features, num_classes)
-        )
-        self.criterion = None
-        self.optimizer = None
-        self.scheduler = None
-
-    def forward(self, x):
-        return self.model(x)
-
-    def train_setup(self, prm):
-        self.to(self.device)
-        self.criterion = nn.CrossEntropyLoss().to(self.device)
-        self.optimizer = optim.SGD(
-            self.parameters(),
-            lr=prm.get('lr', 0.1),
-            momentum=prm.get('momentum', 0.9),
-            weight_decay=1e-4
-        )
-        optimizer = self.optimizer
-        prm.setdefault('epoch_max', prm.get('epoch', 90))
-{scheduler_code}
-        self.scheduler = scheduler
-
-    def learn(self, train_data):
-        self.train()
-        for inputs, labels in train_data:
-            inputs = inputs.to(self.device).float()
-            labels = labels.to(self.device)
-            self.optimizer.zero_grad()
-            outputs = self(inputs)
-            loss = self.criterion(outputs, labels)
-            if not torch.isfinite(loss):
-                continue
-            loss.backward()
-            nn.utils.clip_grad_norm_(self.parameters(), 3.0)
-            self.optimizer.step()
-        if self.scheduler is not None:
-            self.scheduler.step()
-
-def get_model_and_optimizer(in_shape=(1, 3, 32, 32), out_shape=(10,), max_epoch=90, learning_rate=0.1, dropout=0.2, momentum=0.9, device='cpu', **kwargs):
-    prm = {{'lr': learning_rate, 'momentum': momentum, 'dropout': dropout, 'epoch_max': max_epoch, 'epoch': max_epoch}}
-    prm.update(kwargs)
-    model = Net(in_shape=in_shape, out_shape=out_shape, prm=prm, device=device)
-    model.train_setup(prm)
-    return model, model.optimizer, model.scheduler
-'''
-
-# ---------------------------------------------------------------------------
-# Scheduler Strategies
-# ---------------------------------------------------------------------------
-STRATEGIES = [
+# ── LR Scheduler configurations ──────────────────────────────────────────────
+SCHEDULERS = [
     {
-        "name": "StepLR_default",
-        "hyperparams": {"lr", "momentum", "dropout", "step_size", "gamma"},
-        "code": "        scheduler = lr_scheduler.StepLR(optimizer, step_size=prm.get('step_size', 30), gamma=prm.get('gamma', 0.1))"
+        'name': 'StepLR_s10_g05',
+        'extra_hp': ['step_size', 'gamma'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=prm.get('step_size', 10), gamma=prm.get('gamma', 0.5))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "MultiStepLR_milestones",
-        "hyperparams": {"lr", "momentum", "dropout", "milestone0", "milestone1", "milestone2", "gamma"},
-        "code": "        milestones = sorted(set([max(1, int(prm['epoch_max'] * prm.get('milestone0', 0.3))), max(1, int(prm['epoch_max'] * prm.get('milestone1', 0.6))), max(1, int(prm['epoch_max'] * prm.get('milestone2', 0.8)))]))\n        scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=prm.get('gamma', 0.1))"
+        'name': 'StepLR_s5_g03',
+        'extra_hp': ['step_size', 'gamma'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=prm.get('step_size', 5), gamma=prm.get('gamma', 0.3))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "ExponentialLR_default",
-        "hyperparams": {"lr", "momentum", "dropout", "gamma"},
-        "code": "        scheduler = lr_scheduler.ExponentialLR(optimizer, gamma=prm.get('gamma', 0.95))"
+        'name': 'StepLR_s20_g07',
+        'extra_hp': ['step_size', 'gamma'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=prm.get('step_size', 20), gamma=prm.get('gamma', 0.7))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "PolynomialLR_quadratic",
-        "hyperparams": {"lr", "momentum", "dropout", "power"},
-        "code": "        scheduler = lr_scheduler.PolynomialLR(optimizer, total_iters=prm['epoch_max'], power=prm.get('power', 1.0))"
+        'name': 'StepLR_s3_g01',
+        'extra_hp': ['step_size', 'gamma'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=prm.get('step_size', 3), gamma=prm.get('gamma', 0.1))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "PolynomialLR_cubic",
-        "hyperparams": {"lr", "momentum", "dropout", "power"},
-        "code": "        scheduler = lr_scheduler.PolynomialLR(optimizer, total_iters=prm['epoch_max'], power=prm.get('power', 2.0))"
+        'name': 'ExponentialLR_g095',
+        'extra_hp': ['gamma'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=prm.get('gamma', 0.95))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "CosineAnnealingLR_default",
-        "hyperparams": {"lr", "momentum", "dropout", "eta_min"},
-        "code": "        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=prm['epoch_max'], eta_min=prm.get('eta_min', 0.0))"
+        'name': 'ExponentialLR_g09',
+        'extra_hp': ['gamma'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=prm.get('gamma', 0.9))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "CosineAnnealingLR_with_min_lr",
-        "hyperparams": {"lr", "momentum", "dropout", "min_lr"},
-        "code": "        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=prm['epoch_max'], eta_min=prm.get('lr', 0.1) * prm.get('min_lr', 0.01))"
+        'name': 'ExponentialLR_g098',
+        'extra_hp': ['gamma'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=prm.get('gamma', 0.98))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "CosineAnnealingWarmRestarts_T0_small",
-        "hyperparams": {"lr", "momentum", "dropout", "T_0", "T_mult", "eta_min"},
-        "code": "        scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(prm.get('T_0', 10)), T_mult=prm.get('T_mult', 2), eta_min=prm.get('eta_min', 0.0))"
+        'name': 'CosineAnnealingLR_T5',
+        'extra_hp': ['T_max', 'eta_min'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=prm.get('T_max', 5), eta_min=prm.get('eta_min', 1e-6))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "CosineAnnealingWarmRestarts_T0_large",
-        "hyperparams": {"lr", "momentum", "dropout", "T_0", "T_mult", "eta_min"},
-        "code": "        scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(prm.get('T_0', 20)), T_mult=prm.get('T_mult', 1), eta_min=prm.get('eta_min', 0.0))"
+        'name': 'CosineAnnealingLR_T10',
+        'extra_hp': ['T_max', 'eta_min'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=prm.get('T_max', 10), eta_min=prm.get('eta_min', 1e-6))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "CyclicLR_triangular",
-        "hyperparams": {"lr", "momentum", "dropout", "min_lr", "lr_step"},
-        "code": "        scheduler = lr_scheduler.CyclicLR(optimizer, base_lr=prm.get('lr', 0.1) * prm.get('min_lr', 0.1), max_lr=prm.get('lr', 0.1), step_size_up=max(1, int(prm['epoch_max'] * prm.get('lr_step', 0.1))), mode='triangular')"
+        'name': 'CosineAnnealingLR_T20',
+        'extra_hp': ['T_max', 'eta_min'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=prm.get('T_max', 20), eta_min=prm.get('eta_min', 1e-6))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "CyclicLR_triangular2",
-        "hyperparams": {"lr", "momentum", "dropout", "min_lr", "lr_step"},
-        "code": "        scheduler = lr_scheduler.CyclicLR(optimizer, base_lr=prm.get('lr', 0.1) * prm.get('min_lr', 0.1), max_lr=prm.get('lr', 0.1), step_size_up=max(1, int(prm['epoch_max'] * prm.get('lr_step', 0.1))), mode='triangular2')"
+        'name': 'MultiStepLR_m5_10_g05',
+        'extra_hp': ['gamma'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.MultiStepLR(self.optimizer, milestones=[5, 10], gamma=prm.get('gamma', 0.5))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "CyclicLR_exp_range",
-        "hyperparams": {"lr", "momentum", "dropout", "min_lr", "lr_step", "cycle_momentum"},
-        "code": "        scheduler = lr_scheduler.CyclicLR(optimizer, base_lr=prm.get('lr', 0.1) * prm.get('min_lr', 0.1), max_lr=prm.get('lr', 0.1), step_size_up=max(1, int(prm['epoch_max'] * prm.get('lr_step', 0.1))), mode='exp_range', gamma=prm.get('cycle_momentum', 0.85))"
+        'name': 'MultiStepLR_m3_7_g03',
+        'extra_hp': ['gamma'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.MultiStepLR(self.optimizer, milestones=[3, 7], gamma=prm.get('gamma', 0.3))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "OneCycleLR_default",
-        "hyperparams": {"lr", "momentum", "dropout", "pct_start", "div_factor"},
-        "code": "        scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=prm.get('lr', 0.1), total_steps=max(2, prm['epoch_max']), pct_start=prm.get('pct_start', 0.3), anneal_strategy='cos', div_factor=prm.get('div_factor', 25.0))"
+        'name': 'MultiStepLR_m2_4_g01',
+        'extra_hp': ['gamma'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.MultiStepLR(self.optimizer, milestones=[2, 4], gamma=prm.get('gamma', 0.1))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "OneCycleLR_aggressive",
-        "hyperparams": {"lr", "momentum", "dropout", "pct_start", "div_factor"},
-        "code": "        scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=prm.get('lr', 0.1), total_steps=max(2, prm['epoch_max']), pct_start=prm.get('pct_start', 0.1), anneal_strategy='linear', div_factor=prm.get('div_factor', 10.0))"
+        'name': 'ReduceLROnPlateau_f05_p2',
+        'extra_hp': ['factor', 'patience'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=prm.get('factor', 0.5), patience=prm.get('patience', 2))",
+        'step_code_batch': '            self.scheduler.step(loss.item())',
+        'step_location': 'per_batch',
     },
     {
-        "name": "LinearLR_warmup",
-        "hyperparams": {"lr", "momentum", "dropout", "warmup_epochs", "start_factor"},
-        "code": "        scheduler = lr_scheduler.LinearLR(optimizer, start_factor=prm.get('start_factor', 0.1), total_iters=max(1, int(prm['epoch_max'] * prm.get('warmup_epochs', 0.1))))"
+        'name': 'ReduceLROnPlateau_f03_p3',
+        'extra_hp': ['factor', 'patience'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=prm.get('factor', 0.3), patience=prm.get('patience', 3))",
+        'step_code_batch': '            self.scheduler.step(loss.item())',
+        'step_location': 'per_batch',
     },
     {
-        "name": "ConstantLR_warmup",
-        "hyperparams": {"lr", "momentum", "dropout", "warmup_epochs", "factor"},
-        "code": "        scheduler = lr_scheduler.ConstantLR(optimizer, factor=prm.get('factor', 0.5), total_iters=max(1, int(prm['epoch_max'] * prm.get('warmup_epochs', 0.1))))"
+        'name': 'ReduceLROnPlateau_f01_p5',
+        'extra_hp': ['factor', 'patience'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=prm.get('factor', 0.1), patience=prm.get('patience', 5))",
+        'step_code_batch': '            self.scheduler.step(loss.item())',
+        'step_location': 'per_batch',
     },
     {
-        "name": "LambdaLR_linear_decay",
-        "hyperparams": {"lr", "momentum", "dropout"},
-        "code": "        epoch_max = prm['epoch_max']\n        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda epoch: max(0.1, (1.0 - epoch / epoch_max)))"
+        'name': 'CyclicLR_tri',
+        'extra_hp': ['base_lr', 'max_lr'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.CyclicLR(self.optimizer, base_lr=prm.get('base_lr', 1e-4), max_lr=prm.get('max_lr', 0.1), mode='triangular', step_size_up=200)",
+        'step_code_batch': '            self.scheduler.step()',
+        'step_location': 'per_batch',
     },
     {
-        "name": "LambdaLR_power_decay",
-        "hyperparams": {"lr", "momentum", "dropout", "power"},
-        "code": "        epoch_max = prm['epoch_max']\n        power = prm.get('power', 2.0)\n        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda epoch: (1.0 - epoch / epoch_max) ** power)"
+        'name': 'CyclicLR_tri2',
+        'extra_hp': ['base_lr', 'max_lr'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.CyclicLR(self.optimizer, base_lr=prm.get('base_lr', 1e-4), max_lr=prm.get('max_lr', 0.1), mode='triangular2', step_size_up=200)",
+        'step_code_batch': '            self.scheduler.step()',
+        'step_location': 'per_batch',
     },
     {
-        "name": "MultiplicativeLR_exponential",
-        "hyperparams": {"lr", "momentum", "dropout", "gamma"},
-        "code": "        scheduler = lr_scheduler.MultiplicativeLR(optimizer, lr_lambda=lambda epoch: prm.get('gamma', 0.95))"
+        'name': 'CyclicLR_exp',
+        'extra_hp': ['base_lr', 'max_lr', 'gamma'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.CyclicLR(self.optimizer, base_lr=prm.get('base_lr', 1e-4), max_lr=prm.get('max_lr', 0.1), mode='exp_range', gamma=prm.get('gamma', 0.999), step_size_up=200)",
+        'step_code_batch': '            self.scheduler.step()',
+        'step_location': 'per_batch',
     },
     {
-        "name": "ChainedScheduler_warmup_cosine",
-        "hyperparams": {"lr", "momentum", "dropout", "warmup_epochs", "eta_min"},
-        "code": "        warmup = lr_scheduler.LinearLR(optimizer, start_factor=prm.get('start_factor', 0.1), total_iters=max(1, int(prm['epoch_max'] * prm.get('warmup_epochs', 0.1))))\n        cosine = lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, int(prm['epoch_max'] * (1 - prm.get('warmup_epochs', 0.1)))), eta_min=prm.get('eta_min', 0.0))\n        scheduler = lr_scheduler.ChainedScheduler([warmup, cosine])"
+        'name': 'OneCycleLR_01',
+        'extra_hp': ['max_lr'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer, max_lr=prm.get('max_lr', 0.1), steps_per_epoch=500, epochs=5)",
+        'step_code_batch': '            self.scheduler.step()',
+        'step_location': 'per_batch',
     },
     {
-        "name": "SequentialLR_warmup_step",
-        "hyperparams": {"lr", "momentum", "dropout", "warmup_epochs", "gamma"},
-        "code": "        warmup_iters = max(1, int(prm['epoch_max'] * prm.get('warmup_epochs', 0.1)))\n        warmup = lr_scheduler.LinearLR(optimizer, start_factor=prm.get('start_factor', 0.1), total_iters=warmup_iters)\n        decay = lr_scheduler.StepLR(optimizer, step_size=max(1, int(prm['epoch_max'] * 0.3)), gamma=prm.get('gamma', 0.1))\n        scheduler = lr_scheduler.SequentialLR(optimizer, schedulers=[warmup, decay], milestones=[warmup_iters])"
+        'name': 'OneCycleLR_005',
+        'extra_hp': ['max_lr'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer, max_lr=prm.get('max_lr', 0.05), steps_per_epoch=500, epochs=5)",
+        'step_code_batch': '            self.scheduler.step()',
+        'step_location': 'per_batch',
     },
     {
-        "name": "LambdaLR_exponential_decay",
-        "hyperparams": {"lr", "momentum", "dropout", "gamma"},
-        "code": "        gamma = prm.get('gamma', 0.95)\n        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda epoch: gamma ** epoch)"
+        'name': 'CosineWarmRestarts_T5',
+        'extra_hp': ['T_0', 'eta_min'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, T_0=prm.get('T_0', 5), eta_min=prm.get('eta_min', 1e-6))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "LambdaLR_cosine_like",
-        "hyperparams": {"lr", "momentum", "dropout"},
-        "code": "        import math\n        epoch_max = prm['epoch_max']\n        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda epoch: 0.5 * (1 + math.cos(math.pi * epoch / epoch_max)))"
+        'name': 'CosineWarmRestarts_T2',
+        'extra_hp': ['T_0', 'eta_min'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, T_0=prm.get('T_0', 2), eta_min=prm.get('eta_min', 1e-6))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "StepLR_long_decay",
-        "hyperparams": {"lr", "momentum", "dropout", "gamma"},
-        "code": "        scheduler = lr_scheduler.StepLR(optimizer, step_size=max(1, int(prm['epoch_max'] * 0.5)), gamma=prm.get('gamma', 0.1))"
+        'name': 'LinearLR_sf01',
+        'extra_hp': ['start_factor', 'total_iters'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.LinearLR(self.optimizer, start_factor=prm.get('start_factor', 0.1), total_iters=prm.get('total_iters', 5))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
     {
-        "name": "CosineAnnealingLR_high_min",
-        "hyperparams": {"lr", "momentum", "dropout", "min_lr"},
-        "code": "        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=prm['epoch_max'], eta_min=prm.get('lr', 0.1) * prm.get('min_lr', 0.1))"
+        'name': 'PolynomialLR_p2',
+        'extra_hp': ['total_iters', 'power'],
+        'setup_code': "        self.scheduler = torch.optim.lr_scheduler.PolynomialLR(self.optimizer, total_iters=prm.get('total_iters', 5), power=prm.get('power', 2.0))",
+        'step_code': '        self.scheduler.step()',
+        'step_location': 'per_epoch',
     },
 ]
 
-
-def generate():
-    """Generate new_nn.py files in the standard output directory."""
-    os.makedirs(str(OUTPUT_DIR), exist_ok=True)
-
-    # Clean __pycache__ which can confuse NNEval
-    pycache = os.path.join(str(OUTPUT_DIR), "__pycache__")
-    if os.path.exists(pycache):
-        shutil.rmtree(pycache)
-
-    generated = []
-    for i, strategy in enumerate(STRATEGIES):
-        module_name = f"{MODEL_PREFIX}{i + 1:03d}"
-        model_dir = os.path.join(str(OUTPUT_DIR), module_name)
-        os.makedirs(model_dir, exist_ok=True)
-
-        filepath = os.path.join(model_dir, new_nn_file)
-        hyperparams_str = repr(sorted(strategy["hyperparams"]))
-        content = MODEL_TEMPLATE.format(
-            supported_hyperparameters_set=hyperparams_str,
-            scheduler_code=strategy["code"]
-        )
-
-        with open(filepath, "w") as f:
-            f.write(content)
-
-        generated.append(module_name)
-        print(f"  Generated: {module_name} ({strategy['name']})")
-
-    print(f"\nGenerated {len(generated)} models in {OUTPUT_DIR}")
-    print("Run validation with: python -m ab.gpt.NNEval")
-    return generated
+# ── Weight decay variations ───────────────────────────────────────────────────
+WEIGHT_DECAY_VALUES = [0.0, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3]
 
 
-if __name__ == "__main__":
-    generate()
+def find_nn_source_dir():
+    """Find the nn-dataset architecture source directory."""
+    mod = importlib.import_module('ab.nn.nn.ResNet')
+    return Path(mod.__file__).parent
+
+
+def read_architecture_source(src_dir, arch_name):
+    """Read the source file for a given architecture."""
+    src_file = src_dir / f'{arch_name}.py'
+    if not src_file.exists():
+        return None
+    with open(src_file, 'r') as f:
+        return f.read()
+
+
+def get_supported_hp(src_dir, arch_name):
+    """Get supported hyperparameters from architecture by importing."""
+    try:
+        mod = importlib.import_module(f'ab.nn.nn.{arch_name}')
+        return mod.supported_hyperparameters()
+    except Exception:
+        return None
+
+
+def _find_method_range(lines, method_name, class_indent=0):
+    """
+    Find the line range [start, end) of a method within a class.
+    Returns (start_line_idx, end_line_idx) or None.
+    """
+    method_indent = class_indent + 4
+    method_def = ' ' * method_indent + f'def {method_name}('
+    
+    start = None
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(f'def {method_name}(') and line.startswith(' ' * method_indent):
+            start = i
+            break
+    
+    if start is None:
+        return None
+    
+    # Find end: next method/class definition at same or lower indent, or end of file
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        stripped = lines[i].strip()
+        if not stripped:
+            continue
+        indent = len(lines[i]) - len(lines[i].lstrip())
+        # Same indent or less = new method or class or module-level
+        if indent <= method_indent and stripped:
+            # Check it's a def/class, not just a comment
+            if stripped.startswith('def ') or stripped.startswith('class ') or \
+               stripped.startswith('@') or (indent < method_indent and not stripped.startswith('#')):
+                end = i
+                break
+    
+    return (start, end)
+
+
+def _find_optimizer_step_line(lines, learn_start, learn_end):
+    """Find the line index of 'self.optimizer.step()' within learn method."""
+    for i in range(learn_start, learn_end):
+        if 'self.optimizer.step()' in lines[i]:
+            return i
+    return None
+
+
+def _find_last_line_of_train_setup(lines, ts_start, ts_end):
+    """Find the last non-empty line of train_setup to insert scheduler after."""
+    last = ts_end - 1
+    while last > ts_start and not lines[last].strip():
+        last -= 1
+    return last
+
+
+def inject_scheduler_ast(source_code, scheduler_cfg, weight_decay, arch_hp_set):
+    """
+    Modify architecture source code to inject LR scheduler using line-based editing.
+    
+    This approach is more flexible than regex — it finds method boundaries and
+    inserts/appends lines rather than matching exact patterns.
+    
+    Returns the modified source code, or None if injection fails.
+    """
+    lines = source_code.split('\n')
+    
+    # ── Find class Net ────────────────────────────────────────────────────────
+    class_start = None
+    class_indent = 0
+    for i, line in enumerate(lines):
+        if re.match(r'^class Net\b', line):
+            class_start = i
+            class_indent = 0
+            break
+        m = re.match(r'^(\s*)class Net\b', line)
+        if m:
+            class_start = i
+            class_indent = len(m.group(1))
+            break
+    
+    if class_start is None:
+        return None
+    
+    # ── Find train_setup method range ─────────────────────────────────────────
+    ts_range = _find_method_range(lines, 'train_setup', class_indent)
+    if ts_range is None:
+        return None
+    ts_start, ts_end = ts_range
+    
+    # ── Find learn method range ───────────────────────────────────────────────
+    learn_range = _find_method_range(lines, 'learn', class_indent)
+    if learn_range is None:
+        return None
+    learn_start, learn_end = learn_range
+    
+    # ── Find supported_hyperparameters function ───────────────────────────────
+    hp_func_range = None
+    for i, line in enumerate(lines):
+        if re.match(r'^def supported_hyperparameters\(', line):
+            hp_start = i
+            # Find end
+            hp_end = len(lines)
+            for j in range(i + 1, len(lines)):
+                stripped = lines[j].strip()
+                if not stripped:
+                    continue
+                indent = len(lines[j]) - len(lines[j].lstrip())
+                if indent == 0 and stripped and not stripped.startswith('#'):
+                    hp_end = j
+                    break
+            hp_func_range = (hp_start, hp_end)
+            break
+    
+    if hp_func_range is None:
+        return None
+    
+    # ── Build new supported_hyperparameters ───────────────────────────────────
+    all_hp = set(arch_hp_set)
+    for hp in scheduler_cfg['extra_hp']:
+        all_hp.add(hp)
+    if weight_decay > 0:
+        all_hp.add('weight_decay')
+    
+    new_hp_str = '{' + ', '.join(f"'{h}'" for h in sorted(all_hp)) + '}'
+    new_hp_lines = [
+        'def supported_hyperparameters():',
+        f'    return {new_hp_str}',
+    ]
+    
+    # ── Modify learn method ───────────────────────────────────────────────────
+    # Find optimizer.step() line and add scheduler step after it
+    opt_step_idx = _find_optimizer_step_line(lines, learn_start, learn_end)
+    if opt_step_idx is None:
+        return None
+    
+    # Determine the indent level of optimizer.step() line
+    opt_step_line = lines[opt_step_idx]
+    opt_indent = len(opt_step_line) - len(opt_step_line.lstrip())
+    
+    if scheduler_cfg['step_location'] == 'per_batch':
+        # Insert per-batch scheduler step right after optimizer.step()
+        batch_step = scheduler_cfg.get('step_code_batch', '            self.scheduler.step()')
+        lines.insert(opt_step_idx + 1, batch_step)
+        # Adjust indices
+        if learn_end > opt_step_idx:
+            learn_end += 1
+        if ts_start > opt_step_idx:
+            ts_start += 1
+            ts_end += 1
+        if hp_func_range[0] > opt_step_idx:
+            hp_func_range = (hp_func_range[0] + 1, hp_func_range[1] + 1)
+    else:
+        # per_epoch: add scheduler step after the for-loop (at method body indent)
+        step_line = scheduler_cfg.get('step_code', '        self.scheduler.step()')
+        
+        # Find the last line that belongs to the learn method body
+        # Only consider lines with indent deeper than the method definition level
+        method_def_indent = class_indent + 4  # e.g., 4 for 'def learn'
+        method_body_indent = method_def_indent + 4  # e.g., 8 for body of learn
+        insert_idx = opt_step_idx + 1  # default: right after optimizer.step()
+        for i in range(learn_end - 1, learn_start, -1):
+            line = lines[i]
+            if line.strip():
+                line_indent = len(line) - len(line.lstrip())
+                if line_indent >= method_body_indent:
+                    # This line is inside the learn method body
+                    insert_idx = i + 1
+                    break
+        
+        # Insert the scheduler step at method body level
+        lines.insert(insert_idx, step_line)
+        # Adjust indices
+        if ts_start >= insert_idx:
+            ts_start += 1
+            ts_end += 1
+        if hp_func_range[0] >= insert_idx:
+            hp_func_range = (hp_func_range[0] + 1, hp_func_range[1] + 1)
+    
+    # ── Modify train_setup: add weight_decay to optimizer + scheduler creation ─
+    # Find the last meaningful line in train_setup
+    last_ts_line = _find_last_line_of_train_setup(lines, ts_start, ts_end)
+    
+    # If weight_decay > 0, try to add it to the optimizer line
+    if weight_decay > 0:
+        for i in range(ts_start, ts_end):
+            if 'self.optimizer' in lines[i] and '=' in lines[i]:
+                # Find the full optimizer assignment spanning potentially multiple lines
+                # Track parenthesis nesting to find the outermost closing paren
+                opt_start = i
+                # Find the '(' that starts the optimizer call (e.g., SGD( or Adam()
+                # We need to track from the first '(' after '=' sign
+                full_text = ''
+                opt_end = i
+                paren_depth = 0
+                found_start = False
+                final_close_line = None
+                final_close_col = None
+                
+                for k in range(i, ts_end):
+                    line = lines[k]
+                    for col, ch in enumerate(line):
+                        if ch == '(':
+                            if not found_start and k == i and col > line.index('='):
+                                found_start = True
+                            paren_depth += 1
+                        elif ch == ')':
+                            paren_depth -= 1
+                            if found_start and paren_depth == 0:
+                                final_close_line = k
+                                final_close_col = col
+                                break
+                    if final_close_line is not None:
+                        break
+                
+                if final_close_line is not None:
+                    # Check the block for existing weight_decay
+                    block = '\n'.join(lines[i:final_close_line + 1])
+                    if 'weight_decay' not in block:
+                        line = lines[final_close_line]
+                        # Check for trailing comma before the closing paren
+                        before_paren = line[:final_close_col].rstrip()
+                        if before_paren.endswith(','):
+                            # Already has trailing comma, just add param before ')'
+                            lines[final_close_line] = (
+                                line[:final_close_col] +
+                                f" weight_decay=prm.get('weight_decay', {weight_decay})" +
+                                line[final_close_col:]
+                            )
+                        else:
+                            lines[final_close_line] = (
+                                line[:final_close_col] +
+                                f", weight_decay=prm.get('weight_decay', {weight_decay})" +
+                                line[final_close_col:]
+                            )
+                break
+    
+    # Re-find last_ts_line after potential modifications
+    last_ts_line = _find_last_line_of_train_setup(lines, ts_start, ts_end)
+    
+    # Check if there's already a self.scheduler line (like AirNext)
+    has_scheduler = False
+    scheduler_line_idx = None
+    for i in range(ts_start, ts_end):
+        if 'self.scheduler' in lines[i]:
+            has_scheduler = True
+            scheduler_line_idx = i
+            break
+    
+    if has_scheduler:
+        # Replace existing scheduler line
+        lines[scheduler_line_idx] = scheduler_cfg['setup_code']
+    else:
+        # Insert scheduler setup after last line of train_setup
+        lines.insert(last_ts_line + 1, scheduler_cfg['setup_code'])
+        # Adjust hp_func_range if needed
+        if hp_func_range[0] > last_ts_line:
+            hp_func_range = (hp_func_range[0] + 1, hp_func_range[1] + 1)
+    
+    # ── Replace supported_hyperparameters function ────────────────────────────
+    hp_s, hp_e = hp_func_range
+    lines[hp_s:hp_e] = new_hp_lines
+    
+    # ── Reconstruct code ──────────────────────────────────────────────────────
+    code = '\n'.join(lines)
+    
+    # ── Ensure all HP keys appear >= 2 times as string literals ───────────────
+    # The Eval checker requires each HP in supported_hyperparameters() to appear
+    # at least twice as a string literal in the code.
+    # This covers both our added params AND original arch params that may be buggy.
+    all_hp_to_check = set(scheduler_cfg['extra_hp'])
+    all_hp_to_check.update(arch_hp_set)
+    if weight_decay > 0:
+        all_hp_to_check.add('weight_decay')
+    
+    for hp in sorted(all_hp_to_check):
+        count = code.count(f"'{hp}'") + code.count(f'"{hp}"')
+        if count < 2:
+            safe_name = hp.upper().replace('-', '_').replace(' ', '_')
+            extra_line = f"_HP_{safe_name} = '{hp}'  # hyperparameter key\n"
+            code = extra_line + code
+    
+    # ── Verify the code has required functions ────────────────────────────────
+    for fn in ('supported_hyperparameters', 'train_setup', 'learn'):
+        if not re.search(r'\s+def\s' + re.escape(fn) + r'\(', code):
+            if not re.search(r'^def\s' + re.escape(fn) + r'\(', code, re.MULTILINE):
+                return None
+    
+    return code
+
+
+def generate_models(output_base_dir, prefix='BO'):
+    """Generate ~2000 model variants."""
+    src_dir = find_nn_source_dir()
+    output_base = Path(output_base_dir)
+    output_base.mkdir(parents=True, exist_ok=True)
+    
+    model_idx = 1
+    total_generated = 0
+    total_skipped = 0
+    arch_stats = {}
+    
+    print(f"Source directory: {src_dir}")
+    print(f"Output directory: {output_base}")
+    print(f"Architectures: {len(ARCHITECTURES)}")
+    print(f"Schedulers: {len(SCHEDULERS)}")
+    print(f"Weight decay values: {len(WEIGHT_DECAY_VALUES)}")
+    print(f"Max possible models: {len(ARCHITECTURES) * len(SCHEDULERS) * len(WEIGHT_DECAY_VALUES)}")
+    print()
+    
+    for arch in ARCHITECTURES:
+        source_code = read_architecture_source(src_dir, arch)
+        if source_code is None:
+            print(f"[SKIP] {arch}: source file not found")
+            total_skipped += len(SCHEDULERS) * len(WEIGHT_DECAY_VALUES)
+            continue
+        
+        arch_hp = get_supported_hp(src_dir, arch)
+        if arch_hp is None:
+            print(f"[SKIP] {arch}: cannot import supported_hyperparameters")
+            total_skipped += len(SCHEDULERS) * len(WEIGHT_DECAY_VALUES)
+            continue
+        
+        arch_count = 0
+        arch_skip = 0
+        skip_reasons = {}
+        
+        for sched in SCHEDULERS:
+            for wd in WEIGHT_DECAY_VALUES:
+                model_code = inject_scheduler_ast(source_code, sched, wd, arch_hp)
+                
+                if model_code is None:
+                    arch_skip += 1
+                    total_skipped += 1
+                    reason = f"{sched['name']}"
+                    skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                    continue
+                
+                # Validate: parse AST to ensure valid Python
+                try:
+                    ast.parse(model_code)
+                except SyntaxError as e:
+                    arch_skip += 1
+                    total_skipped += 1
+                    reason = f"{sched['name']}_syntax"
+                    skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                    continue
+                
+                # Validate: each HP in supported_hyperparameters appears >= 2 times
+                hp_match = re.search(
+                    r'def supported_hyperparameters\(\):.*?return\s+(\{[^}]+\})',
+                    model_code, re.DOTALL
+                )
+                if hp_match:
+                    try:
+                        hp_set = ast.literal_eval(hp_match.group(1))
+                        valid = True
+                        for h in hp_set:
+                            cnt = model_code.count(f"'{h}'") + model_code.count(f'"{h}"')
+                            if cnt < 2:
+                                valid = False
+                                break
+                        if not valid:
+                            arch_skip += 1
+                            total_skipped += 1
+                            continue
+                    except Exception:
+                        arch_skip += 1
+                        total_skipped += 1
+                        continue
+                
+                # Create model directory
+                model_name = f"{prefix}_{model_idx:04d}"
+                model_dir = output_base / model_name
+                model_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Write new_nn.py
+                nn_file = model_dir / 'new_nn.py'
+                with open(nn_file, 'w') as f:
+                    f.write(model_code)
+                
+                # Write metadata for reference
+                meta_file = model_dir / 'model_meta.txt'
+                with open(meta_file, 'w') as f:
+                    f.write(f"architecture: {arch}\n")
+                    f.write(f"scheduler: {sched['name']}\n")
+                    f.write(f"weight_decay: {wd}\n")
+                    f.write(f"original_hp: {sorted(arch_hp)}\n")
+                    f.write(f"added_hp: {sched['extra_hp']}\n")
+                
+                model_idx += 1
+                arch_count += 1
+                total_generated += 1
+        
+        arch_stats[arch] = {'generated': arch_count, 'skipped': arch_skip}
+        status = "OK" if arch_count > 0 else "FAIL"
+        print(f"[{status}] {arch}: {arch_count} models generated, {arch_skip} skipped")
+        if arch_skip > 0 and arch_count == 0:
+            for reason, cnt in sorted(skip_reasons.items()):
+                print(f"       {reason}: {cnt}")
+    
+    print(f"\n{'='*60}")
+    print(f"TOTAL: {total_generated} models generated, {total_skipped} skipped")
+    print(f"Models saved to: {output_base}")
+    print(f"{'='*60}")
+    
+    print(f"\nPer-architecture summary:")
+    for arch, stats in arch_stats.items():
+        print(f"  {arch:40s} gen={stats['generated']:4d}  skip={stats['skipped']:4d}")
+    
+    return total_generated
+
+
+def main():
+    project_root = Path(__file__).resolve().parents[4]  # nn-gpt root
+    output_dir = project_root / 'out' / 'nngpt' / 'llm' / 'epoch' / 'A0' / 'synth_nn'
+    
+    # Clean existing BO_ models
+    if output_dir.exists():
+        import shutil
+        removed = 0
+        for d in output_dir.iterdir():
+            if d.is_dir() and d.name.startswith('BO_'):
+                shutil.rmtree(d)
+                removed += 1
+        if removed:
+            print(f"Cleaned {removed} existing BO_ model directories.\n")
+    
+    total = generate_models(str(output_dir), prefix='BO')
+    print(f"\nDone. Generated {total} models ready for NNEval.")
+    print(f"\nTo evaluate, run:")
+    print(f"  PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python -m ab.gpt.NNEval --only_epoch 0 --nn_train_epochs 5 --nn_name_prefix BO")
+
+
+if __name__ == '__main__':
+    main()

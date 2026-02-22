@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import ast
+import json
 import importlib
 from pathlib import Path
 
@@ -212,6 +213,55 @@ SCHEDULERS = [
 
 # ── Weight decay variations ───────────────────────────────────────────────────
 WEIGHT_DECAY_VALUES = [0.0, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3]
+
+# ── Architecture-specific hyperparameter defaults ─────────────────────────────
+# These are extra HP keys that architectures access via prm['key'] (hard access)
+# but NNEval only provides {lr, batch, dropout, momentum, transform, epoch}.
+# We write these into hp.txt so NNEval loads them before model instantiation.
+ARCH_EXTRA_HP_DEFAULTS = {
+    'ConvNeXt': {'stochastic_depth_prob': 0.1, 'norm_eps': 1e-6, 'norm_std': 0.02},
+    'GoogLeNet': {'dropout_aux': 0.7},
+    'MaxVit': {'attention_dropout': 0.0, 'stochastic_depth_prob': 0.1},
+    'MobileNetV3': {'norm_eps': 0.001, 'norm_momentum': 0.01},
+    'SwinTransformer': {'attention_dropout': 0.0, 'stochastic_depth_prob': 0.1},
+    'VisionTransformer': {'attention_dropout': 0.0, 'patch_size': 0.5},
+}
+
+
+def build_hp_dict(arch, scheduler_cfg, weight_decay):
+    """
+    Build the hp.txt JSON dict for a model.
+    Includes base training params + architecture-specific extras + scheduler extras.
+    """
+    hp = {
+        'lr': 0.01,
+        'batch': 64,
+        'dropout': 0.2,
+        'momentum': 0.9,
+        'transform': 'norm_256_flip',
+    }
+    # Add architecture-specific defaults
+    if arch in ARCH_EXTRA_HP_DEFAULTS:
+        hp.update(ARCH_EXTRA_HP_DEFAULTS[arch])
+    # Add scheduler-specific defaults
+    for param in scheduler_cfg['extra_hp']:
+        if param not in hp:
+            # Use the default value from the setup_code
+            defaults = {
+                'step_size': 10, 'gamma': 0.5,
+                'T_max': 10, 'eta_min': 1e-6,
+                'factor': 0.5, 'patience': 3,
+                'base_lr': 1e-4, 'max_lr': 0.1,
+                'T_0': 5,
+                'start_factor': 0.1, 'total_iters': 5,
+                'power': 2.0,
+            }
+            if param in defaults:
+                hp[param] = defaults[param]
+    # Add weight_decay if nonzero
+    if weight_decay > 0:
+        hp['weight_decay'] = weight_decay
+    return hp
 
 
 def find_nn_source_dir():
@@ -613,6 +663,12 @@ def generate_models(output_base_dir, prefix='BO'):
                 nn_file = model_dir / 'new_nn.py'
                 with open(nn_file, 'w') as f:
                     f.write(model_code)
+                
+                # Write hp.txt (JSON) so NNEval loads architecture-specific defaults
+                hp_dict = build_hp_dict(arch, sched, wd)
+                hp_file = model_dir / 'hp.txt'
+                with open(hp_file, 'w') as f:
+                    json.dump(hp_dict, f, indent=2)
                 
                 # Write metadata for reference
                 meta_file = model_dir / 'model_meta.txt'

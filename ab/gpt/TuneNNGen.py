@@ -51,7 +51,7 @@ TEST_METRIC = None  # 'bleu' or other metric for evaluation
 ONNX_RUN = False
 UNSLOTH_OPT = False
 TRANS_MODE = False  # only transform fine-tuning
-PROMPT_BATCH = 1
+PROMPT_BATCH = 2
 
 # --- Pipeline-Optimized Defaults (for iterative_finetune.py) ---
 # These defaults are optimized for multi-cycle iterative fine-tuning

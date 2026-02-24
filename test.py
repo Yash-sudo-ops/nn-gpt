@@ -10,6 +10,11 @@ import ab.nn.api as lemur
 from ab.nn.api import JoinConf
 import functools
 
+"""
+Verification:
+  python test.py
+  (requires nn_minhash table populated via json_nn_to_db)
+"""
 
 # ---------------------- Helpers ----------------------
 
@@ -158,6 +163,7 @@ def test_anchor_band_correctness_all_bands():
     - should return BAND_N rows for each band (if feasible)
     - returned anchor_jaccard must fall inside the band.
     """
+    print("[TEST] Running anchor_band_correctness_all_bands (DB MinHash, auto-anchor, all bands)")
     for band in BANDS_TO_TEST:
         band = band.strip()
         mn, mx = band_range(band)

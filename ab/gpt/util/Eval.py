@@ -52,7 +52,8 @@ class Eval:
                 raise Exception(f'The param \'{prm_key}\' is not used in the code.')
 
         nn_dataset.data.cache_clear()
-        ids_list = nn_dataset.data()["nn_id"].unique().tolist()
+        df = nn_dataset.data()
+        ids_list = df["nn_id"].unique().tolist() if "nn_id" in df.columns else []
         new_checksum = uuid4(code)
         if new_checksum not in ids_list:
             return api.check_nn(code, self.task, self.dataset, self.metric, self.prm, self.save_to_db, self.prefix, self.save_path)

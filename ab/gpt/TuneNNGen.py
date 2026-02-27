@@ -51,7 +51,7 @@ TEST_METRIC = None  # 'bleu' or other metric for evaluation
 ONNX_RUN = False
 UNSLOTH_OPT = False
 TRANS_MODE = False  # only transform fine-tuning
-PROMPT_BATCH = 1
+PROMPT_BATCH = 2
 
 # --- Pipeline-Optimized Defaults (for iterative_finetune.py) ---
 # These defaults are optimized for multi-cycle iterative fine-tuning
@@ -391,9 +391,7 @@ if __name__ == '__main__':
                         help=f'Max prompts for LLM fine-tuning; excess is truncated (default: {MAX_PROMPTS}).')
     parser.add_argument('--max_new_tokens', type=int, default=MAX_NEW_TOKENS,
                         help=f'Max number of tokens in LLM output (default: {MAX_NEW_TOKENS}).')
-    parser.add_argument('--save_llm_output', type=bool, default=SAVE_LLM_OUTPUT,
-                        help=f'Save full output of LLM in the file {new_out_file} (default: {SAVE_LLM_OUTPUT}).')
-    parser.add_argument('--use_deepspeed', type=bool, default=USE_DEEPSPEED,
+    parser.add_argument('--use_deepspeed', action='store_true',
                         help=f'Utilize DeepSpeed optimizations for LLM fine-tuning (default: {USE_DEEPSPEED}).')
     parser.add_argument('--per_device_train_batch_size', type=int, default=PER_DEVICE_TRAIN_BATCH_SIZE,
                         help=f'Per device train batch size (default: {PER_DEVICE_TRAIN_BATCH_SIZE}).')
@@ -440,11 +438,11 @@ if __name__ == '__main__':
                         help=f"[Pipeline] Warmup steps override (default: None, uses warmup_ratio for standalone).")
     parser.add_argument('--weight_decay', type=float, default=None,
                         help=f"[Pipeline] Weight decay for regularization (default: None).")
-    parser.add_argument('--trans_mode', type=bool, default=TRANS_MODE,
+    parser.add_argument('--trans_mode', action='store_true',
                         help=f"Run model generation for transforms only (default: {TRANS_MODE}).")
-    parser.add_argument('--onnx_run', type=bool, default=ONNX_RUN,
+    parser.add_argument('--onnx_run', action='store_true',
                         help=f"Run model generation step with LLM in ONNX format (default: {ONNX_RUN}).")
-    parser.add_argument('--unsloth_opt', type=bool, default=UNSLOTH_OPT,
+    parser.add_argument('--unsloth_opt', action='store_true',
                         help=f"Use Unsloth optimizations (default: {UNSLOTH_OPT}).")
     parser.add_argument('--prompt_batch', type=int, default=PROMPT_BATCH,
                         help=f"Batch size for prompts – Number of prompts processed simultaneously (default: {PROMPT_BATCH}).")
@@ -517,7 +515,6 @@ if __name__ == '__main__':
          max_prompts=args.max_prompts,
          max_new_tokens=args.max_new_tokens,
          use_deepspeed=args.use_deepspeed,
-         save_llm_output=args.save_llm_output,
          nn_name_prefix=args.nn_name_prefix,
          nn_train_epochs=args.nn_train_epochs,
          temperature=args.temperature,

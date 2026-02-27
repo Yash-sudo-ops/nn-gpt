@@ -47,9 +47,9 @@ class NNGenPrompt(Prompt):
             data = lemur.data(only_best_accuracy=only_best_accuracy, task=key_dict.get('task'),
                               nn_prefixes=tuple(key_dict.get('nn_prefixes')), max_rows=n_training_prompts,
                               sql=None if num_joint_nns < 2 else JoinConf(num_joint_nns=num_joint_nns,
-                                                                          same_columns=tuple(key_dict.get('keep_same')),
-                                                                          diff_columns=tuple(key_dict.get('no_repeat')),
-                                                                          enhance_nn=key_dict.get('improve')))
+                                                                          same_columns=tuple(key_dict.get('keep_same', [])),
+                                                                          diff_columns=tuple(key_dict.get('no_repeat', [])),
+                                                                          enhance_nn=key_dict.get('improve', False)))
             print('Data acquisition complete', flush=True)
             
             # Check if this is delta mode

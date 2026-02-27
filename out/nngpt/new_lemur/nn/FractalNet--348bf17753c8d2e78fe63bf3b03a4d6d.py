@@ -20,10 +20,34 @@ def supported_hyperparameters():
 # Main Conv Block
 # -------------------------------------------------
 def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0, element_list=['Conv2d', 'MaxPool2d', 'BatchNorm2d', 'ReLU', 'Dropout2d']):
-    return nn.Sequential(
-        nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias),
+    return MultiBranchConvBlock(in_channels, out_channels, stride, padding, bias, dropout_prob, element_list)
+
+class MultiBranchConvBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0, element_list=['Conv2d', 'MaxPool2d', 'BatchNorm2d', 'ReLU', 'Dropout2d']):
+        super().__init__()
+        # ----- Branch 1 -----
+        self.branch1 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias),
         nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias)
-    )
+        )
+        # ----- Branch 2 -----
+        self.branch2 = nn.Sequential(
+            nn.MaxPool2d(kernel_size=3, stride=2)
+        )
+        # ----- Branch 3 -----
+        self.branch3 = nn.Sequential(
+            nn.BatchNorm2d(out_channels),
+        nn.ReLU(inplace=True)
+        )
+    def forward(self, x):
+        b1 = self.branch1(x)
+        b2 = self.branch2(x)
+        b3 = self.branch3(x)
+        
+        return 0
+
+        # merge (mean keeps fractal-style stability)
+        #return (b1 + b2 + b3) / 3.0
 # -------------------------------------------------
 # Fractal Block
 # -------------------------------------------------
@@ -43,8 +67,7 @@ class FractalBlock(nn.Module):
                     level.append(
                         nn.Sequential(
                              nn.Conv2d(in_ch_ij, out_channels, kernel_size=3, stride=1, padding=1, bias=False),
-                       nn.ReLU(inplace=True),
-                       nn.BatchNorm2d(out_channels)
+                       nn.ReLU(inplace=True)
                     )
                     )
                 else:
@@ -112,7 +135,7 @@ class Net(nn.Module):
 
         # -------- FILLED BY GENERATOR --------
         N = 1
-        num_columns = 3
+        num_columns = 1
         element_list = ['Conv2d', 'MaxPool2d', 'BatchNorm2d', 'ReLU', 'Dropout2d']
 
         dropout_prob = float(prm["dropout"])

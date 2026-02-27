@@ -1,9 +1,9 @@
 [
     {
-        "accuracy": 0.5153,
+        "accuracy": 0.4315,
         "batch": 64,
         "dropout": 0.2,
-        "duration": 923226485244,
+        "duration": 123197885297,
         "epoch": 5,
         "lr": 0.01,
         "momentum": 0.9,

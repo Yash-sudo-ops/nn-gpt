@@ -24,7 +24,7 @@
             "env": [
               {
                 "name": "POPULATION_SIZE",
-                "value": "20"
+                "value": "10"
               },
               {
                 "name": "GENERATIONS",
@@ -36,7 +36,7 @@
               },
               {
                 "name": "META_ATTEMPTS",
-                "value": "50"
+                "value": "10"
               }
             ],
             "securityContext": {
@@ -47,7 +47,7 @@
             "resources": {
               "requests": {
                 "nvidia.com/gpu": 1,
-                "cpu": 8,
+                "cpu": 10,
                 "memory": "32Gi"
               },
               "limits": {

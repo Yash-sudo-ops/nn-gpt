@@ -76,8 +76,8 @@ def fitness_function(chromosome: dict) -> float:
         eval_prm = {
             'lr': chromosome['lr'],
             'momentum': chromosome['momentum'],
-            'batch': 32, 
-            'epoch': 1, # Short epochs for Meta-Evaluation
+            'batch': 64,  # Increased from 32: more signal per step, avoids AccuracyException floor
+            'epoch': 1,   # Short epochs for Meta-Evaluation
             'transform': "norm_256_flip" 
         }
 

@@ -53,8 +53,8 @@ class Net(nn.Module):
         n_classes = out_shape[0] if out_shape else 10
 
         self.entry = nn.Sequential(
-            nn.Conv2d(c_in, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(c_in, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(inplace=True)
         )
 
@@ -62,9 +62,9 @@ class Net(nn.Module):
         blocks = []
         pools = []
         trans_layers = []
-        cur_chan = 64
+        cur_chan = 32
         for i in range(2):
-            blocks.append(FractalBlock(1, cur_chan, 0.1))
+            blocks.append(FractalBlock(2, cur_chan, 0.1))
             pools.append(nn.MaxPool2d(2))
             if i < 2 - 1:
                 next_chan = cur_chan * 2

@@ -24,7 +24,7 @@ ADAPTER_SAVE_PATH = os.path.join(BASE_DIR, "fine_tuned_adapter")
 BENCH_GENS = int(os.environ.get("GENERATIONS", 3))
 BENCH_POP = int(os.environ.get("POPULATION_SIZE", 10)) 
 
-# --- MICRO-MUTATION PROMPT ---
+# --- MICRO-MUTATION PROMPTS ---
 PROMPTS = {
     "mutate_gene": """
 Improve this mutation helper function for a genetic algorithm.
@@ -34,6 +34,28 @@ Existing Code:
 {code}
 
 Output ONLY the python code starting with 'def mutate_gene(self, current_value, possible_values):'
+""",
+    "combine_genes": """
+Improve this crossover helper function for a genetic algorithm.
+Goal: Decide which parent's gene value to use when creating a child chromosome.
+You may use blending, uniform crossover, or any creative strategy.
+Parameters: gene_name (str), parent1_value, parent2_value, crossover_point (int), gene_index (int), total_genes (int).
+
+Existing Code:
+{code}
+
+Output ONLY the python code starting with 'def combine_genes(self, gene_name, parent1_value, parent2_value, crossover_point, gene_index, total_genes):'
+""",
+    "select_competitor": """
+Improve this selection helper function for a genetic algorithm.
+Goal: Pick the best individual from a list of tournament competitors.
+Each competitor is a dict with 'chromosome' and 'fitness' keys.
+You may add fitness-proportional selection, diversity bonuses, or other strategies.
+
+Existing Code:
+{code}
+
+Output ONLY the python code starting with 'def select_competitor(self, competitors):'
 """
 }
 
@@ -242,10 +264,11 @@ if __name__ == "__main__":
     MODEL_PATH = "deepseek-ai/deepseek-coder-6.7b-instruct" 
     evolver = MetaEvolver(MODEL_PATH)
     
-    # LOOP: FOCUS ONLY ON MUTATION FOR NOW
-    # LOOP: AUTOMATED VIA ENV
+    # LOOP: CYCLE THROUGH ALL EVOLVABLE COMPONENTS
     META_ITERATIONS = int(os.environ.get("META_ATTEMPTS"))
+    COMPONENTS = ["mutate_gene", "combine_genes", "select_competitor"]
     for i in range(META_ITERATIONS):
-        print(f"\n=== Meta-Evolution Iteration {i+1}/{META_ITERATIONS} ===")
-        evolver.evolve_component("mutate_gene") 
+        component = COMPONENTS[i % len(COMPONENTS)]
+        print(f"\n=== Meta-Evolution Iteration {i+1}/{META_ITERATIONS} — Evolving: {component} ===")
+        evolver.evolve_component(component) 
         time.sleep(2)

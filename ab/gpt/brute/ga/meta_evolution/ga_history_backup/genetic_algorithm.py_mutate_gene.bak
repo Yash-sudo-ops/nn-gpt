@@ -32,15 +32,24 @@ class GeneticAlgorithm:
         return 0, None
 
     # --- START LLM: CROSSOVER ---
+    def combine_genes(self, gene_name, parent1_value, parent2_value, crossover_point, gene_index, total_genes):
+        """
+        Decide which parent's gene to use for a child chromosome.
+        Returns the chosen gene value.
+        """
+        if gene_index < crossover_point:
+            return parent1_value
+        else:
+            return parent2_value
+
     def _crossover(self, parent1_chromo, parent2_chromo):
         child_chromo = {}
         genes = list(self.search_space.keys())
         point = random.randint(1, len(genes) - 1)
         for i, gene in enumerate(genes):
-            if i < point:
-                child_chromo[gene] = parent1_chromo[gene]
-            else:
-                child_chromo[gene] = parent2_chromo[gene]
+            child_chromo[gene] = self.combine_genes(
+                gene, parent1_chromo[gene], parent2_chromo[gene], point, i, len(genes)
+            )
         return child_chromo
     # --- END LLM: CROSSOVER ---
 
@@ -70,10 +79,18 @@ class GeneticAlgorithm:
     # --- END LLM: MUTATION ---
 
     # --- START LLM: SELECTION ---
+    def select_competitor(self, competitors):
+        """
+        Pick the best individual from a list of competitors.
+        Each competitor is a dict with 'chromosome' and 'fitness' keys.
+        Returns the winning individual.
+        """
+        return max(competitors, key=lambda x: x['fitness'] if x['fitness'] is not None else -1)
+
     def _selection(self):
         k = 3
         competitors = random.sample(self.population, min(k, len(self.population)))
-        return max(competitors, key=lambda x: x['fitness'] if x['fitness'] is not None else -1)
+        return self.select_competitor(competitors)
     # --- END LLM: SELECTION ---
 
     def run(self, num_generations, fitness_function):

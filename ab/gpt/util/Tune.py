@@ -263,35 +263,35 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
             # Initial generation
             _, hp, tr, full_out = chat_bot.chat(prompt_text, engineer_prompt=False, max_new_tokens=max_new_tokens)
 
-        if use_backbone:
-            from ab.gpt.util.SFTUtil import skeleton_code
-            import textwrap
-            
-            # Extract full blocks (including signatures)
-            block_code = extract_str(full_out, '<block>', '</block>')
-            init_code = extract_str(full_out, '<init>', '</init>')
-            forward_code = extract_str(full_out, '<forward>', '</forward>')
+            if use_backbone:
+                from ab.gpt.util.SFTUtil import skeleton_code
+                import textwrap
 
-            if block_code and init_code and forward_code:
-                code = skeleton_code
-                
-                # Replace skeleton signatures with LLM-provided blocks (including signatures)
-                # Ensure correct indentation for internal methods
-                sig_block = "def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):"
-                code = code.replace(sig_block, textwrap.dedent(block_code))
-                
-                sig_init = "    def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:"
-                code = code.replace(sig_init, textwrap.indent(textwrap.dedent(init_code), "    "))
-                
-                sig_forward = "    def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:"
-                code = code.replace(sig_forward, textwrap.indent(textwrap.dedent(forward_code), "    "))
-            else:
-                from ab.gpt.util.Util import extract_code
-                code = extract_code(full_out)
-        
-        if code is None:
-            print(f'[ERROR] No code generated for model B{idx}')
-            continue # Skip if no code is generated at all
+                # Extract full blocks (including signatures)
+                block_code = extract_str(full_out, '<block>', '</block>')
+                init_code = extract_str(full_out, '<init>', '</init>')
+                forward_code = extract_str(full_out, '<forward>', '</forward>')
+
+                if block_code and init_code and forward_code:
+                    code = skeleton_code
+
+                    # Replace skeleton signatures with LLM-provided blocks (including signatures)
+                    # Ensure correct indentation for internal methods
+                    sig_block = "def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):"
+                    code = code.replace(sig_block, textwrap.dedent(block_code))
+
+                    sig_init = "    def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:"
+                    code = code.replace(sig_init, textwrap.indent(textwrap.dedent(init_code), "    "))
+
+                    sig_forward = "    def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:"
+                    code = code.replace(sig_forward, textwrap.indent(textwrap.dedent(forward_code), "    "))
+                else:
+                    from ab.gpt.util.Util import extract_code
+                    code = extract_code(full_out)
+
+            if code is None:
+                print(f'[ERROR] No code generated for model B{idx}')
+                continue # Skip if no code is generated at all
 
             makedirs(model_dir, exist_ok=True)
             if save_llm_output:

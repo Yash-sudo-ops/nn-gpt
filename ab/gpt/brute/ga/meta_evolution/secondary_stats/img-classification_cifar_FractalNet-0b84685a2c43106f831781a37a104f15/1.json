@@ -1,0 +1,24 @@
+{
+    "config": {
+        "task": "img-classification",
+        "dataset": "cifar-10",
+        "metric": "acc",
+        "model": "img-classification_cifar-10_FractalNet-0b84685a2c43106f831781a37a104f15"
+    },
+    "hyperparameters": {
+        "lr": 0.01,
+        "momentum": 0.9,
+        "batch": 64,
+        "epoch": 1,
+        "transform": "norm_32_flip",
+        "uid": "528e9321985a615d523c46b0356b25e6",
+        "duration": 2898907002,
+        "accuracy": 0.1356
+    },
+    "training_summary": {
+        "total_epochs": 1,
+        "best_accuracy": 0.1356,
+        "final_accuracy": 0.1356
+    },
+    "uid": "0b84685a2c43106f831781a37a104f15"
+}

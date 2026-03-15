@@ -47,6 +47,22 @@ os.makedirs(STATS_DIR, exist_ok=True)
 
 seen_checksums = set()
 
+# Persist checksums across runs: load checksums from existing stats folders
+def _load_existing_checksums():
+    """Scan stats/ directory for previously evaluated models to avoid re-evaluation."""
+    count = 0
+    prefix = "img-classification_cifar_FractalNet-"
+    if os.path.isdir(STATS_DIR):
+        for name in os.listdir(STATS_DIR):
+            if name.startswith(prefix):
+                checksum = name[len(prefix):]
+                seen_checksums.add(checksum)
+                count += 1
+    if count:
+        print(f"[Init] Loaded {count} existing checksums from stats/ (skipping duplicates)")
+
+_load_existing_checksums()
+
 def uuid4(s: str) -> str:
     return hashlib.md5(s.encode()).hexdigest()
 
@@ -76,9 +92,9 @@ def fitness_function(chromosome: dict) -> float:
         eval_prm = {
             'lr': chromosome['lr'],
             'momentum': chromosome['momentum'],
-            'batch': 32, 
-            'epoch': 1, # Short epochs for Meta-Evaluation
-            'transform': "norm_256_flip" 
+            'batch': 64,  # Increased from 32: more signal per step, avoids AccuracyException floor
+            'epoch': 1,   # Short epochs for Meta-Evaluation
+            'transform': "norm_32_flip"  # Native CIFAR-10 resolution (was 256 → massive slowdown)
         }
 
         # --- FIX: Delete stale training_summary.json before eval so it

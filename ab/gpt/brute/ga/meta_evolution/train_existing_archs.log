@@ -428,3 +428,200 @@ Exception: Code is missing.
 2026-03-15 15:44:14 | INFO | [39/104] SUCCESS | Accuracy: 14.53% | Elapsed: 1284.5s | Saved to: /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-433bafc1934d771f75580697c3e3583a/1.json
 2026-03-15 15:44:14 | INFO | [40/104] Evaluating model: FractalNet-44e9216fc6675740cc760220a9eba2b5
 2026-03-15 15:44:14 | INFO | Starting evaluation ...
+2026-03-15 16:07:51 | ERROR | [40/104] FAILED | Exception: (0.1002, 2676595950, "Accuracy is too low: 0.1002. The minimum accepted accuracy for the 'cifar-10' dataset is 0.1.")
+2026-03-15 16:07:51 | ERROR | Traceback (most recent call last):
+  File "/a/mm/ab/gpt/brute/ga/meta_evolution/train_existing_archs.py", line 262, in main
+    accuracy, dest_file = train_and_save(filepath, model_name, checksum)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/mm/ab/gpt/brute/ga/meta_evolution/train_existing_archs.py", line 116, in train_and_save
+    result = evaluator.evaluate(filepath)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/mm/ab/gpt/util/Eval.py", line 87, in evaluate
+    return api.check_nn(code, self.task, self.dataset, self.metric, self.prm, self.save_to_db, self.prefix, self.save_path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/prg/.pyenv/versions/ve/lib/python3.12/site-packages/ab/nn/api.py", line 39, in check_nn
+    return Train.train_new(nn_code, task, dataset, metric, prm, save_to_db=save_to_db, prefix=prefix, save_path=save_path, export_onnx=export_onnx, epoch_limit_minutes=epoch_limit_minutes)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/prg/.pyenv/versions/ve/lib/python3.12/site-packages/ab/nn/util/Train.py", line 260, in train_new
+    accuracy, accuracy_to_time, duration = trainer.train_n_eval(epoch, epoch_limit_minutes)
+                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/prg/.pyenv/versions/ve/lib/python3.12/site-packages/ab/nn/util/Train.py", line 165, in train_n_eval
+    raise AccuracyException(accuracy, duration,
+ab.nn.util.Exception.AccuracyException: (0.1002, 2676595950, "Accuracy is too low: 0.1002. The minimum accepted accuracy for the 'cifar-10' dataset is 0.1.")
+
+2026-03-15 16:07:51 | INFO | [41/104] Evaluating model: FractalNet-477c5ffcc37ca2dc3d98fd737a60d218
+2026-03-15 16:07:51 | INFO | Starting evaluation ...
+2026-03-15 16:33:03 | ERROR | [41/104] FAILED | Exception: (0.1083, 3186450773, "Accuracy is too low: 0.1083. The minimum accepted accuracy for the 'cifar-10' dataset is 0.1.")
+2026-03-15 16:33:03 | ERROR | Traceback (most recent call last):
+  File "/a/mm/ab/gpt/brute/ga/meta_evolution/train_existing_archs.py", line 262, in main
+    accuracy, dest_file = train_and_save(filepath, model_name, checksum)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/mm/ab/gpt/brute/ga/meta_evolution/train_existing_archs.py", line 116, in train_and_save
+    result = evaluator.evaluate(filepath)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/mm/ab/gpt/util/Eval.py", line 87, in evaluate
+    return api.check_nn(code, self.task, self.dataset, self.metric, self.prm, self.save_to_db, self.prefix, self.save_path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/prg/.pyenv/versions/ve/lib/python3.12/site-packages/ab/nn/api.py", line 39, in check_nn
+    return Train.train_new(nn_code, task, dataset, metric, prm, save_to_db=save_to_db, prefix=prefix, save_path=save_path, export_onnx=export_onnx, epoch_limit_minutes=epoch_limit_minutes)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/prg/.pyenv/versions/ve/lib/python3.12/site-packages/ab/nn/util/Train.py", line 260, in train_new
+    accuracy, accuracy_to_time, duration = trainer.train_n_eval(epoch, epoch_limit_minutes)
+                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/prg/.pyenv/versions/ve/lib/python3.12/site-packages/ab/nn/util/Train.py", line 165, in train_n_eval
+    raise AccuracyException(accuracy, duration,
+ab.nn.util.Exception.AccuracyException: (0.1083, 3186450773, "Accuracy is too low: 0.1083. The minimum accepted accuracy for the 'cifar-10' dataset is 0.1.")
+
+2026-03-15 16:33:03 | INFO | [42/104] Evaluating model: FractalNet-4b3c81d803ea69428633d908784777cf
+2026-03-15 16:33:03 | INFO | Starting evaluation ...
+2026-03-15 16:58:21 | INFO | Saved stats sequentially to /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-4b3c81d803ea69428633d908784777cf
+2026-03-15 16:58:21 | INFO | [42/104] SUCCESS | Accuracy: 27.07% | Elapsed: 1517.9s | Saved to: /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-4b3c81d803ea69428633d908784777cf/1.json
+2026-03-15 16:58:21 | INFO | [43/104] Evaluating model: FractalNet-4da3152987c2b286d3ebc6af4f5a2ff4
+2026-03-15 16:58:21 | INFO | Starting evaluation ...
+2026-03-15 17:24:08 | INFO | Saved stats sequentially to /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-4da3152987c2b286d3ebc6af4f5a2ff4
+2026-03-15 17:24:08 | INFO | [43/104] SUCCESS | Accuracy: 12.83% | Elapsed: 1547.3s | Saved to: /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-4da3152987c2b286d3ebc6af4f5a2ff4/1.json
+2026-03-15 17:24:08 | INFO | [44/104] Evaluating model: FractalNet-4f53bfc51afdbc9f07a907df4e17f2c0
+2026-03-15 17:24:08 | INFO | Starting evaluation ...
+2026-03-15 17:47:29 | INFO | Saved stats sequentially to /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-4f53bfc51afdbc9f07a907df4e17f2c0
+2026-03-15 17:47:29 | INFO | [44/104] SUCCESS | Accuracy: 31.12% | Elapsed: 1400.3s | Saved to: /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-4f53bfc51afdbc9f07a907df4e17f2c0/1.json
+2026-03-15 17:47:29 | INFO | [45/104] Evaluating model: FractalNet-53c2c84897b77bda64d4c366a0622ff7
+2026-03-15 17:47:29 | INFO | Starting evaluation ...
+2026-03-15 18:12:26 | INFO | Saved stats sequentially to /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-53c2c84897b77bda64d4c366a0622ff7
+2026-03-15 18:12:26 | INFO | [45/104] SUCCESS | Accuracy: 32.51% | Elapsed: 1497.1s | Saved to: /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-53c2c84897b77bda64d4c366a0622ff7/1.json
+2026-03-15 18:12:26 | INFO | [46/104] Evaluating model: FractalNet-56a9c98e437c4fb08e100b6b3664094c
+2026-03-15 18:12:26 | INFO | Starting evaluation ...
+2026-03-15 18:37:36 | INFO | Saved stats sequentially to /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-56a9c98e437c4fb08e100b6b3664094c
+2026-03-15 18:37:36 | INFO | [46/104] SUCCESS | Accuracy: 15.28% | Elapsed: 1510.4s | Saved to: /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-56a9c98e437c4fb08e100b6b3664094c/1.json
+2026-03-15 18:37:36 | INFO | [47/104] Evaluating model: FractalNet-5a07e3ce3ca80bfc6eeca98e23d5527b
+2026-03-15 18:37:36 | INFO | Starting evaluation ...
+2026-03-15 18:42:08 | INFO | ============================================================
+2026-03-15 18:42:08 | INFO | train_existing_archs.py started.
+2026-03-15 18:42:08 | INFO | Found 104 architecture(s) in ga_fractal_arch/
+2026-03-15 18:42:08 | INFO | Stats will be saved to secondary_stats/
+2026-03-15 18:42:08 | INFO | Log output will be persisted in train_existing_archs.log
+2026-03-15 18:42:08 | INFO | ============================================================
+2026-03-15 18:42:08 | INFO | [1/104] SKIP (stats already exist): FractalNet-014a3bceedfa13c95711f06efc464c8d
+2026-03-15 18:42:08 | INFO | [2/104] SKIP (stats already exist): FractalNet-018c2b0111c6ce15105da8c00fc72c85
+2026-03-15 18:42:08 | INFO | [3/104] Evaluating model: FractalNet-021f0bd30f1b9433ca7c027b3a9bd80d
+2026-03-15 18:42:08 | INFO | Starting evaluation ...
+2026-03-15 19:08:51 | INFO | Saved stats sequentially to /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-021f0bd30f1b9433ca7c027b3a9bd80d
+2026-03-15 19:08:51 | INFO | [3/104] SUCCESS | Accuracy: 15.63% | Elapsed: 1603.0s | Saved to: /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-021f0bd30f1b9433ca7c027b3a9bd80d/1.json
+2026-03-15 19:08:51 | INFO | [4/104] SKIP (stats already exist): FractalNet-03c2a0a45caac3c5ef41ae0301bbde13
+2026-03-15 19:08:51 | INFO | [5/104] SKIP (stats already exist): FractalNet-058916e7ee432b532dc6d8224545708e
+2026-03-15 19:08:51 | INFO | [6/104] SKIP (stats already exist): FractalNet-070b9ab3ed90901902ea811737910d1c
+2026-03-15 19:08:51 | INFO | [7/104] Evaluating model: FractalNet-098666ad19a9947be9d4d04f88502774
+2026-03-15 19:08:51 | INFO | Starting evaluation ...
+2026-03-15 19:33:33 | INFO | Saved stats sequentially to /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-098666ad19a9947be9d4d04f88502774
+2026-03-15 19:33:33 | INFO | [7/104] SUCCESS | Accuracy: 14.71% | Elapsed: 1481.9s | Saved to: /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-098666ad19a9947be9d4d04f88502774/1.json
+2026-03-15 19:33:33 | INFO | [8/104] SKIP (stats already exist): FractalNet-0b84685a2c43106f831781a37a104f15
+2026-03-15 19:33:33 | INFO | [9/104] SKIP (stats already exist): FractalNet-0e0b7621c9f7480466ece8867babba6c
+2026-03-15 19:33:33 | INFO | [10/104] SKIP (stats already exist): FractalNet-10437a92f2fb1f32869547103df7915d
+2026-03-15 19:33:33 | INFO | [11/104] SKIP (stats already exist): FractalNet-105f47ec1f3343baf276cc2b281ad481
+2026-03-15 19:33:33 | INFO | [12/104] Evaluating model: FractalNet-11c2c6bf2d731b770e675b584b362942
+2026-03-15 19:33:33 | INFO | Starting evaluation ...
+2026-03-15 19:56:11 | ERROR | [12/104] FAILED | Exception: (0.1, 3911580064, "Accuracy is too low: 0.1. The minimum accepted accuracy for the 'cifar-10' dataset is 0.1.")
+2026-03-15 19:56:11 | ERROR | Traceback (most recent call last):
+  File "/a/mm/ab/gpt/brute/ga/meta_evolution/train_existing_archs.py", line 267, in main
+    accuracy, dest_file = train_and_save(filepath, model_name, checksum)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/mm/ab/gpt/brute/ga/meta_evolution/train_existing_archs.py", line 119, in train_and_save
+    result = evaluator.evaluate(filepath)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/mm/ab/gpt/util/Eval.py", line 87, in evaluate
+    return api.check_nn(code, self.task, self.dataset, self.metric, self.prm, self.save_to_db, self.prefix, self.save_path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/prg/.pyenv/versions/ve/lib/python3.12/site-packages/ab/nn/api.py", line 39, in check_nn
+    return Train.train_new(nn_code, task, dataset, metric, prm, save_to_db=save_to_db, prefix=prefix, save_path=save_path, export_onnx=export_onnx, epoch_limit_minutes=epoch_limit_minutes)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/prg/.pyenv/versions/ve/lib/python3.12/site-packages/ab/nn/util/Train.py", line 260, in train_new
+    accuracy, accuracy_to_time, duration = trainer.train_n_eval(epoch, epoch_limit_minutes)
+                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/a/prg/.pyenv/versions/ve/lib/python3.12/site-packages/ab/nn/util/Train.py", line 165, in train_n_eval
+    raise AccuracyException(accuracy, duration,
+ab.nn.util.Exception.AccuracyException: (0.1, 3911580064, "Accuracy is too low: 0.1. The minimum accepted accuracy for the 'cifar-10' dataset is 0.1.")
+
+2026-03-15 19:56:11 | INFO | [13/104] SKIP (stats already exist): FractalNet-13955f0a0e774cb700279c159be2bcfa
+2026-03-15 19:56:11 | INFO | [14/104] SKIP (stats already exist): FractalNet-167bcc613e98c0afd765ef460ac92fa2
+2026-03-15 19:56:11 | INFO | [15/104] SKIP (stats already exist): FractalNet-1703274ea5413a33bb140fab591f9081
+2026-03-15 19:56:11 | INFO | [16/104] SKIP (stats already exist): FractalNet-17f8276bc58a42c9136b8abe9de2fdda
+2026-03-15 19:56:11 | INFO | [17/104] SKIP (stats already exist): FractalNet-1d44988970dd2f3954953842331b3d8e
+2026-03-15 19:56:11 | INFO | [18/104] SKIP (stats already exist): FractalNet-1e376b12f9b85d5ce127934843b60cb9
+2026-03-15 19:56:11 | INFO | [19/104] SKIP (stats already exist): FractalNet-1ea4b4f342d656ee333664e731f07659
+2026-03-15 19:56:11 | INFO | [20/104] SKIP (stats already exist): FractalNet-2195178f6668f625c5c99908617349e9
+2026-03-15 19:56:11 | INFO | [21/104] SKIP (stats already exist): FractalNet-21b028e4b59125d6d2f129c651fb69a0
+2026-03-15 19:56:11 | INFO | [22/104] SKIP (stats already exist): FractalNet-2367ef46dfafc33b575cdb5e81342785
+2026-03-15 19:56:11 | INFO | [23/104] SKIP (stats already exist): FractalNet-2406cc49920e1606e9070ee1eb083a3f
+2026-03-15 19:56:11 | INFO | [24/104] SKIP (stats already exist): FractalNet-27d22dcdabf7aa3daad387099c37c3b8
+2026-03-15 19:56:11 | INFO | [25/104] SKIP (stats already exist): FractalNet-2bbd2acb0542817863abff6a54fe7102
+2026-03-15 19:56:11 | INFO | [26/104] SKIP (stats already exist): FractalNet-2fc43461a7e56a2ac04d3c4cd8fd1bb2
+2026-03-15 19:56:11 | INFO | [27/104] SKIP (stats already exist): FractalNet-3217a2b12a3371d11922f553406c57ff
+2026-03-15 19:56:12 | INFO | [28/104] SKIP (stats already exist): FractalNet-344ee1c78fa85e3d9bb24a9e8b6db011
+2026-03-15 19:56:12 | INFO | [29/104] SKIP (stats already exist): FractalNet-357f6c3bb24334eaa3e9eeca2bbee8c3
+2026-03-15 19:56:12 | INFO | [30/104] SKIP (stats already exist): FractalNet-361c5fcb8157ba4ef446b9948c09bb87
+2026-03-15 19:56:12 | INFO | [31/104] SKIP (stats already exist): FractalNet-390f525a60b328749baea89dc48f5e4a
+2026-03-15 19:56:12 | INFO | [32/104] SKIP (stats already exist): FractalNet-39c43e59d7a5711e19d9d74235b14691
+2026-03-15 19:56:12 | INFO | [33/104] SKIP (stats already exist): FractalNet-3aaa9a626dba0d472a4d08d11885acb5
+2026-03-15 19:56:12 | INFO | [34/104] SKIP (stats already exist): FractalNet-3ccbf9f1b37e12a0a0dfbafed8904af9
+2026-03-15 19:56:12 | INFO | [35/104] Evaluating model: FractalNet-3cdcefbe9bc7237721dd14f22a69efe8
+2026-03-15 19:56:12 | INFO | Starting evaluation ...
+2026-03-15 20:17:58 | INFO | Saved stats sequentially to /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-3cdcefbe9bc7237721dd14f22a69efe8
+2026-03-15 20:17:58 | INFO | [35/104] SUCCESS | Accuracy: 15.54% | Elapsed: 1306.7s | Saved to: /a/mm/ab/gpt/brute/ga/meta_evolution/secondary_stats/img-classification_cifar_FractalNet-3cdcefbe9bc7237721dd14f22a69efe8/1.json
+2026-03-15 20:17:58 | INFO | [36/104] Evaluating model: FractalNet-40f30e547b3147cc85f6b06651056754
+2026-03-15 20:17:58 | INFO | Starting evaluation ...
+2026-03-15 20:22:44 | INFO | ============================================================
+2026-03-15 20:22:44 | INFO | train_existing_archs.py started.
+2026-03-15 20:22:44 | INFO | Found 104 architecture(s) in ga_fractal_arch/
+2026-03-15 20:22:44 | INFO | Stats will be saved to secondary_stats/
+2026-03-15 20:22:44 | INFO | Log output will be persisted in train_existing_archs.log
+2026-03-15 20:22:44 | INFO | ============================================================
+2026-03-15 20:22:44 | INFO | [1/104] SKIP (stats already exist): FractalNet-014a3bceedfa13c95711f06efc464c8d
+2026-03-15 20:22:44 | INFO | [2/104] SKIP (stats already exist): FractalNet-018c2b0111c6ce15105da8c00fc72c85
+2026-03-15 20:22:44 | INFO | [3/104] SKIP (stats already exist): FractalNet-021f0bd30f1b9433ca7c027b3a9bd80d
+2026-03-15 20:22:44 | INFO | [4/104] SKIP (stats already exist): FractalNet-03c2a0a45caac3c5ef41ae0301bbde13
+2026-03-15 20:22:44 | INFO | [5/104] SKIP (stats already exist): FractalNet-058916e7ee432b532dc6d8224545708e
+2026-03-15 20:22:44 | INFO | [6/104] SKIP (stats already exist): FractalNet-070b9ab3ed90901902ea811737910d1c
+2026-03-15 20:22:44 | INFO | [7/104] SKIP (stats already exist): FractalNet-098666ad19a9947be9d4d04f88502774
+2026-03-15 20:22:44 | INFO | [8/104] SKIP (stats already exist): FractalNet-0b84685a2c43106f831781a37a104f15
+2026-03-15 20:22:44 | INFO | [9/104] SKIP (stats already exist): FractalNet-0e0b7621c9f7480466ece8867babba6c
+2026-03-15 20:22:44 | INFO | [10/104] SKIP (stats already exist): FractalNet-10437a92f2fb1f32869547103df7915d
+2026-03-15 20:22:44 | INFO | [11/104] SKIP (stats already exist): FractalNet-105f47ec1f3343baf276cc2b281ad481
+2026-03-15 20:22:44 | INFO | [12/104] ▶ Starting: FractalNet-11c2c6bf2d731b770e675b584b362942
+2026-03-15 20:22:44 | INFO | Starting evaluation ...
+2026-03-15 20:30:29 | INFO | ============================================================
+2026-03-15 20:30:29 | INFO | train_existing_archs.py started.
+2026-03-15 20:30:29 | INFO | Found 104 architecture(s) in ga_fractal_arch/
+2026-03-15 20:30:29 | INFO | Stats will be saved to secondary_stats/
+2026-03-15 20:30:29 | INFO | Log output will be persisted in train_existing_archs.log
+2026-03-15 20:30:29 | INFO | ============================================================
+2026-03-15 20:30:29 | INFO | [1/104] SKIP (stats already exist): FractalNet-014a3bceedfa13c95711f06efc464c8d
+2026-03-15 20:30:29 | INFO | [2/104] SKIP (stats already exist): FractalNet-018c2b0111c6ce15105da8c00fc72c85
+2026-03-15 20:30:29 | INFO | [3/104] SKIP (stats already exist): FractalNet-021f0bd30f1b9433ca7c027b3a9bd80d
+2026-03-15 20:30:29 | INFO | [4/104] SKIP (stats already exist): FractalNet-03c2a0a45caac3c5ef41ae0301bbde13
+2026-03-15 20:30:29 | INFO | [5/104] SKIP (stats already exist): FractalNet-058916e7ee432b532dc6d8224545708e
+2026-03-15 20:30:29 | INFO | [6/104] SKIP (stats already exist): FractalNet-070b9ab3ed90901902ea811737910d1c
+2026-03-15 20:30:29 | INFO | [7/104] SKIP (stats already exist): FractalNet-098666ad19a9947be9d4d04f88502774
+2026-03-15 20:30:29 | INFO | [8/104] SKIP (stats already exist): FractalNet-0b84685a2c43106f831781a37a104f15
+2026-03-15 20:30:29 | INFO | [9/104] SKIP (stats already exist): FractalNet-0e0b7621c9f7480466ece8867babba6c
+2026-03-15 20:30:29 | INFO | [10/104] SKIP (stats already exist): FractalNet-10437a92f2fb1f32869547103df7915d
+2026-03-15 20:30:29 | INFO | [11/104] SKIP (stats already exist): FractalNet-105f47ec1f3343baf276cc2b281ad481
+2026-03-15 20:30:29 | INFO | [12/104] ▶ Starting: FractalNet-11c2c6bf2d731b770e675b584b362942
+2026-03-15 20:30:29 | INFO | Starting evaluation ...
+2026-03-15 20:38:15 | INFO | ============================================================
+2026-03-15 20:38:15 | INFO | train_existing_archs.py started.
+2026-03-15 20:38:15 | INFO | Found 104 architecture(s) in ga_fractal_arch/
+2026-03-15 20:38:15 | INFO | Stats will be saved to secondary_stats/
+2026-03-15 20:38:15 | INFO | Log output will be persisted in train_existing_archs.log
+2026-03-15 20:38:15 | INFO | ============================================================
+2026-03-15 20:38:15 | INFO | [1/104] SKIP (stats already exist): FractalNet-014a3bceedfa13c95711f06efc464c8d
+2026-03-15 20:38:15 | INFO | [2/104] SKIP (stats already exist): FractalNet-018c2b0111c6ce15105da8c00fc72c85
+2026-03-15 20:38:15 | INFO | [3/104] SKIP (stats already exist): FractalNet-021f0bd30f1b9433ca7c027b3a9bd80d
+2026-03-15 20:38:15 | INFO | [4/104] SKIP (stats already exist): FractalNet-03c2a0a45caac3c5ef41ae0301bbde13
+2026-03-15 20:38:15 | INFO | [5/104] SKIP (stats already exist): FractalNet-058916e7ee432b532dc6d8224545708e
+2026-03-15 20:38:15 | INFO | [6/104] SKIP (stats already exist): FractalNet-070b9ab3ed90901902ea811737910d1c
+2026-03-15 20:38:15 | INFO | [7/104] SKIP (stats already exist): FractalNet-098666ad19a9947be9d4d04f88502774
+2026-03-15 20:38:15 | INFO | [8/104] SKIP (stats already exist): FractalNet-0b84685a2c43106f831781a37a104f15
+2026-03-15 20:38:15 | INFO | [9/104] SKIP (stats already exist): FractalNet-0e0b7621c9f7480466ece8867babba6c
+2026-03-15 20:38:15 | INFO | [10/104] SKIP (stats already exist): FractalNet-10437a92f2fb1f32869547103df7915d
+2026-03-15 20:38:15 | INFO | [11/104] SKIP (stats already exist): FractalNet-105f47ec1f3343baf276cc2b281ad481
+2026-03-15 20:38:15 | INFO | [12/104] ▶ Starting: FractalNet-11c2c6bf2d731b770e675b584b362942
+2026-03-15 20:38:15 | INFO | Starting evaluation ...

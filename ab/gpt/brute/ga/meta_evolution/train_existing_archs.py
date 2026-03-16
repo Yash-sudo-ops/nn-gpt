@@ -35,6 +35,7 @@ os.makedirs(SECONDARY_STATS_DIR, exist_ok=True)
 # --- LOGGING SETUP ---
 logger = logging.getLogger("TrainExistingArchs")
 logger.setLevel(logging.INFO)
+logger.propagate = False
 
 # Formatter: '2025-03-15 10:23:45 | INFO | message'
 formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
@@ -50,6 +51,7 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 from ab.gpt.util.Eval import Eval
+from ab.nn.util.Const import out_dir
 
 # Regex to extract the 32-char MD5 checksum from the arch filename
 # e.g.  img-classification_cifar-10_FractalNet-5d129b9b39e6f9f64b64eb02c89645c3.py
@@ -74,13 +76,15 @@ def stats_exist(checksum: str) -> bool:
 
 def clear_stale_summary() -> None:
     """Delete out/training_summary.json so it cannot leak between models."""
-    summary_path = os.path.join(os.getcwd(), 'out', 'training_summary.json')
-    if os.path.exists(summary_path):
-        try:
-            os.remove(summary_path)
-            logger.info("Cleared stale training_summary.json")
-        except Exception as e:
-            logger.warning(f"Could not remove stale summary: {e}")
+    summary_path = out_dir / "training_summary.json"
+    old_summary_path = os.path.join(os.getcwd(), 'out', 'training_summary.json')
+    for p in [summary_path, old_summary_path]:
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+                logger.info(f"Cleared stale {p}")
+            except Exception as e:
+                logger.warning(f"Could not remove stale summary {p}: {e}")
 
 
 def train_and_save(filepath: str, model_name: str, checksum: str) -> float:
@@ -110,13 +114,15 @@ def train_and_save(filepath: str, model_name: str, checksum: str) -> float:
         prm=eval_prm,
         save_to_db=False,
         prefix=model_name,
-        save_path=None,
+        save_path=SECONDARY_STATS_DIR,
     )
 
     result = evaluator.evaluate(filepath)
 
     # ---- Collect stats (same logic as run_fractal_evolution.py) ----
-    summary_path = os.path.join(os.getcwd(), 'out', 'training_summary.json')
+    summary_path = out_dir / "training_summary.json"
+    if not summary_path.exists():
+        summary_path = os.path.join(os.getcwd(), 'out', 'training_summary.json')
     full_res = {}
 
     if os.path.exists(summary_path):
@@ -254,14 +260,26 @@ def main():
             sys.stdout.flush()
             continue
 
-        logger.info(f"[{idx}/{total}] Evaluating model: FractalNet-{checksum}")
+        logger.info(f"[{idx}/{total}] ▶ Starting: FractalNet-{checksum}")
         sys.stdout.flush()
         
         t0 = time.time()
         try:
             accuracy, dest_file = train_and_save(filepath, model_name, checksum)
             elapsed = time.time() - t0
-            logger.info(f"[{idx}/{total}] SUCCESS | Accuracy: {accuracy:.2f}% | Elapsed: {elapsed:.1f}s | Saved to: {dest_file}")
+            
+            try:
+                rel_dest = os.path.relpath(dest_file, BASE_DIR)
+            except Exception:
+                rel_dest = dest_file
+                
+            logger.info("─" * 42)
+            logger.info(f"[{idx}/{total}] FractalNet-{checksum}")
+            logger.info(f"        ✓ Accuracy      : {accuracy:.2f}%")
+            logger.info(f"        ✓ Elapsed       : {elapsed:.1f}s")
+            logger.info(f"        ✓ Saved to      : {rel_dest}")
+            logger.info("─" * 42)
+            
             trained += 1
             sys.stdout.flush()
         except Exception as e:

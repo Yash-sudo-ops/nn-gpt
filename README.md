@@ -9,6 +9,58 @@ short alias  <a href='https://pypi.python.org/pypi/lmurg'>lmurg</a>
 
 This Python-based <a href='https://github.com/ABrain-One/nn-gpt'>NNGPT</a> project leverages large language models (LLMs) to automate the creation of neural network architectures, streamlining the design process for machine learning practitioners. It leverages various neural networks from the <a href="https://github.com/ABrain-One/nn-dataset">LEMUR Dataset</a> to fine-tune LLMs and provide insights into potential architectures during the creation of new neural network models.
 
+## LangGraph Multi-Agent Workflow
+
+NNGPT supports an optional LangGraph-based multi-agent orchestration mode. The agent system integrates directly inside `tune()` — no separate entry point, no duplicated logic.
+
+### Design Principle
+
+All pipeline logic remains in `ab/gpt/util/Tune.py` as the **single source of truth**. Agent nodes are thin wrappers only — they read from state and call the existing functions. No logic is reimplemented inside any agent file.
+
+### Agent Flow
+
+The professor-specified flow is: **Finetuner → Generator → Evaluator → Predictor**
+
+
+- **manager** — controls routing, checks epoch stop condition, decides next node
+- **generator** — calls `nn_gen()` / `trans_gen()`; skips if epoch < skip_epoch; skips evaluator if no code generated
+- **evaluator** — calls `_evaluate_epoch()`; stores accuracy and all predictor inputs in state
+- **finetuner** — calls `_finetune_epoch()`; increments epoch counter, returns to manager
+- **predictor** — optional; activates after epoch 1 and epoch 2 accuracies are both available
+
+Any future improvement to `nn_gen()`, `trans_gen()`, `_evaluate_epoch()`, or `_finetune_epoch()` automatically applies to both classic and agent modes.
+
+### Crash Recovery
+
+Agent mode uses LangGraph `MemorySaver` checkpointing. If the pipeline crashes mid-epoch (e.g. GPU OOM), re-running with the same `nn_name_prefix` resumes from the last completed node — no restart from epoch 0.
+
+### Usage
+
+Enable agent mode by adding `--use_agents` to the standard run command:
+
+```bash
+python -m ab.gpt.TuneNNGen_7B_code_olympic_channel_alter --use_agents
+```
+
+To also enable the accuracy predictor agent:
+
+```bash
+python -m ab.gpt.TuneNNGen_7B_code_olympic_channel_alter --use_agents --use_predictor
+```
+
+Without `--use_agents`, the pipeline runs in the original classic mode — behaviour is identical to the unmodified pipeline.
+
+### Agent Files
+
+| File | Purpose |
+|---|---|
+| `ab/gpt/agents/run_agent.py` | Builds and runs the LangGraph StateGraph |
+| `ab/gpt/agents/manager.py` | Routing logic and epoch stop condition |
+| `ab/gpt/agents/predictor.py` | Optional accuracy prediction node |
+| `ab/gpt/agents/state.py` | Shared `AgentState` TypedDict — field names match LEMUR DB columns |
+| `ab/gpt/util/Tune.py` | Single source of truth: `nn_gen`, `trans_gen`, `_evaluate_epoch`, `_finetune_epoch`, `generate_step`, `evaluate_step`, `finetune_step` |
+| `ab/gpt/util/AccPredictor.py` | Accuracy predictor interface (to be implemented) |
+
 ## Create and Activate a Virtual Environment (recommended)
 For Linux/Mac:
    ```bash

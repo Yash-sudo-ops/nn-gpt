@@ -4,12 +4,13 @@ import glob
 import re
 import numpy as np
 import matplotlib.pyplot as plt
+from ab.nn.util.Const import out_dir
 from scipy import stats
 from collections import defaultdict
 
 # 1. Configuration
 # Use relative path for portability
-base_path = "out/nngpt/llm/epoch"
+base_path = out_dir /  'nngpt/llm/epoch'
 
 def collect_final_data():
     stats_map = defaultdict(lambda: {"success": 0, "already_exists": 0, "total": 0, "acc_list": []})

@@ -260,7 +260,6 @@ class ChatBot:
 
 
             # -- FIX 1: Validate token IDs before GPU move -- 
-
             if 'input_ids' in inputs:
                 input_ids = inputs['input_ids']
                 vocab_size = self.tokenizer.vocab_size

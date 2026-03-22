@@ -2,7 +2,7 @@
   "apiVersion": "batch/v1",
   "kind": "Job",
   "metadata": {
-    "name": "nngpt-fractal-meta-evo-01"
+    "name": "nngpt-fractal-meta-evo-clone3"
   },
   "spec": {
     "parallelism": 1,
@@ -84,7 +84,7 @@
           {
             "name": "v0",
             "hostPath": {
-              "path": "/shared/ssd/home/b-a-singh/Thesis/nn-gpt",
+              "path": "/shared/ssd/home/b-a-singh/Thesis/clone3/nn-gpt",
               "type": "Directory"
             }
           },

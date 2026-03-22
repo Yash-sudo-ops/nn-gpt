@@ -60,11 +60,20 @@ class LocalLLMLoader:
             self.model = prepare_model_for_kbit_training(self.model)
 
         # Initialize or Load LoRA
+        # Check if adapter weight files actually exist (not just config/metadata)
+        adapter_weights_exist = False
         if adapter_path and os.path.exists(adapter_path):
+            weight_files = ["adapter_model.safetensors", "adapter_model.bin"]
+            adapter_weights_exist = any(os.path.isfile(os.path.join(adapter_path, wf)) for wf in weight_files)
+
+        if adapter_weights_exist:
             print(f"[LoRA] Loading existing adapters from {adapter_path}")
-            self.model = PeftModel.from_pretrained(self.model, adapter_path, is_trainable=True)
+            self.model = PeftModel.from_pretrained(self.model, adapter_path, is_trainable=True, local_files_only=True)
         else:
-            print("[LoRA] Initializing fresh adapters...")
+            if adapter_path and os.path.exists(adapter_path):
+                print(f"[LoRA] Adapter directory exists at {adapter_path} but no weight files found. Initializing fresh adapters...")
+            else:
+                print("[LoRA] No adapter directory found. Initializing fresh adapters...")
             # Target modules for DeepSeek
             target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
             

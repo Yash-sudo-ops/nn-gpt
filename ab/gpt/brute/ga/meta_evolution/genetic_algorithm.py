@@ -60,14 +60,6 @@ class GeneticAlgorithm:
         """
         if not isinstance(possible_values, list):
             raise ValueError('possible_values should be a list')
-        if not possible_values:
-            return
-        if len(possible_values) == 1:
-            return possible_values[0]
-        new_value = random.choice(possible_values)
-        while new_value == current_value:
-            new_value = random.choice(possible_values)
-        return new_value
     def _mutate(self, chromosome):
         mutated_chromo = chromosome.copy()
         for gene in self.search_space.keys():

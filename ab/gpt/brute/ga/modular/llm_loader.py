@@ -1,8 +1,10 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from peft import PeftModel, LoraConfig, get_peft_model, prepare_model_for_kbit_training
+import os
 
 class LocalLLMLoader:
-    def __init__(self, model_path, use_quantization=True):
+    def __init__(self, model_path, use_quantization=True, adapter_path=None):
         self.model_path = model_path
         
         print(f"Loading Model: {model_path}")
@@ -30,8 +32,6 @@ class LocalLLMLoader:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # Load Model
-        # Force device map to cuda if available and not quantized (or auto if quantized)
-        # For 1.3B, we can usually just load to CUDA:0
         device_map = "auto" 
         if not use_quantization and torch.cuda.is_available():
             device_map = None # Move manually
@@ -55,12 +55,35 @@ class LocalLLMLoader:
                  torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
             )
 
-        if not use_quantization and torch.cuda.is_available():
-            self.model.to("cuda")
+        # Prepare for Training (k-bit)
+        if use_quantization:
+            self.model = prepare_model_for_kbit_training(self.model)
 
-        self.model.eval()
+        # Initialize or Load LoRA
+        if adapter_path and os.path.exists(adapter_path):
+            print(f"[LoRA] Loading existing adapters from {adapter_path}")
+            self.model = PeftModel.from_pretrained(self.model, adapter_path, is_trainable=True)
+        else:
+            print("[LoRA] Initializing fresh adapters...")
+            # Target modules for DeepSeek
+            target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+            
+            peft_config = LoraConfig(
+                r=16,
+                lora_alpha=32,
+                target_modules=target_modules,
+                lora_dropout=0.05,
+                bias="none",
+                task_type="CAUSAL_LM"
+            )
+            self.model = get_peft_model(self.model, peft_config)
+        
+        self.model.print_trainable_parameters()
 
     def generate(self, prompt, max_new_tokens=1024, temperature=0.8, top_k=50, top_p=0.9):
+        # Ensure model is in eval mode for generation
+        self.model.eval()
+        
         inputs = self.tokenizer(prompt, return_tensors="pt")
         if torch.cuda.is_available():
             inputs = inputs.to("cuda")
@@ -83,4 +106,44 @@ class LocalLLMLoader:
             generated_text = generated_text[len(prompt):]
             
         return generated_text.strip()
+
+    def train_on_buffer(self, training_data, epochs=1):
+        """
+        Fine-tune on the collected buffer (Prompt + Completion).
+        data format: [{'prompt': '...', 'completion': '...'}, ...]
+        """
+        if not training_data:
+            return
+            
+        print(f"[LoRA] Training on {len(training_data)} examples...")
+        self.model.train()
+        
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-4) # Higher LR for quick adaptation?
+        
+        for epoch in range(epochs):
+            total_loss = 0
+            for item in training_data:
+                # Format: "Prompt... \n Completion..."
+                full_text = item['prompt'] + "\n" + item['completion']
+                
+                inputs = self.tokenizer(full_text, return_tensors="pt", truncation=True, max_length=2048)
+                if torch.cuda.is_available():
+                    inputs = inputs.to("cuda")
+                
+                # Causal LM: Labels = Inputs
+                outputs = self.model(**inputs, labels=inputs["input_ids"])
+                loss = outputs.loss
+                
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+                
+                total_loss += loss.item()
+                
+            avg_loss = total_loss / len(training_data)
+            print(f"[LoRA] Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f}")
+            
+    def save_adapters(self, save_path):
+        # Save only adapters
+        self.model.save_pretrained(save_path)
 

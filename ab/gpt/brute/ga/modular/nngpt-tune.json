@@ -24,11 +24,11 @@
             "env": [
               {
                 "name": "POPULATION_SIZE",
-                "value": "12"
+                "value": "20"
               },
               {
                 "name": "GENERATIONS",
-                "value": "03"
+                "value": "5"
               },
               {
                 "name": "MUTATION_RATE",

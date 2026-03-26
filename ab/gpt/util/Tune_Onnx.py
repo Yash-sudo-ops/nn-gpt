@@ -11,11 +11,11 @@ import gc
 import ab.nn.api as lemur
 import deepspeed
 from ab.nn.util.Util import release_memory, create_file
-from peft import PeftModel
 from tqdm import tqdm
 import ab.gpt.NNEval as NNEval
 from ab.gpt.util.Chatbot import ChatBot
 from ab.gpt.util.Const import (
+    out_dir,
     ab_root_path,
     conf_dir,
     conf_llm_dir,
@@ -66,7 +66,8 @@ def flatten_chunks(data):
 
 def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_conf, conf_keys, llm_conf,
          training_args, peft_config, max_prompts=None, save_llm_output=True, max_new_tokens=16 * 1024,
-         nn_name_prefix=None, temperature=1.0, top_k=50, top_p=0.9, test_metric=None, onnx_run=False, trans_mode=False):
+         nn_name_prefix=None, temperature=1.0, top_k=50, top_p=0.9, test_metric=None, onnx_run=False, trans_mode=False,
+         prompt_batch=1):
 
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
@@ -164,7 +165,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         from ab.gpt.util.OnnxExport import export_llm_to_onnx
         from ab.gpt.util.OnnxWrapper import OnnxCausalLMWrapper
 
-        export_onnx_path = Path(ab_root_path) / 'onnx_output_folder'
+        export_onnx_path = out_dir / 'onnx_llm'
         onnx_model_file = export_onnx_path / 'model.onnx'
 
     
@@ -241,7 +242,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         if epoch < skip_epoch:
             print(f'Skipped nn generation at epoch {epoch}')
         else:
-            nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix)
+            nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix, prompt_batch)
         # ============================================================
         # FREE ONNX MODEL FROM GPU BEFORE FINE-TUNING
         # ============================================================
@@ -398,7 +399,7 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
             print('[INFO] ========================================')
 
           
-def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix):
+def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix, prompt_batch):
   
     print('Preparing prompts for generation, this might take a while...')
     
@@ -417,9 +418,29 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
         for pr in prompt_dict_key['prompt']:
             prompt += pr + '\n'
 
-        data = lemur.data(only_best_accuracy=True, task=prompt_dict_key['task']).groupby(by='nn').sample(n=1)[:test_nn]
-        addon_task = prompt_dict_key.get('addon_task')
-        addon_data = lemur.data(only_best_accuracy=True, task=addon_task) if addon_task else None
+        # data = lemur.data(only_best_accuracy=True, task=prompt_dict_key['task']).groupby(by='nn').sample(n=1)[:test_nn]
+        # addon_task = prompt_dict_key.get('addon_task')
+        # addon_data = lemur.data(only_best_accuracy=True, task=addon_task) if addon_task else None
+        from ab.nn.api import JoinConf
+
+        num_joint_nns = prompt_dict_key.get('num_joint_nns') or 1
+        if num_joint_nns >= 2:
+            data = lemur.data(
+                only_best_accuracy=True,
+                task=prompt_dict_key['task'],
+                max_rows=test_nn * 5,
+                sql=JoinConf(
+                    num_joint_nns=num_joint_nns,
+                    same_columns=tuple(prompt_dict_key.get('keep_same', [])),
+                    diff_columns=tuple(prompt_dict_key.get('no_repeat', [])),
+                    enhance_nn=prompt_dict_key.get('improve', False)
+                )
+            ).groupby(by='nn').sample(n=1)[:test_nn]
+            addon_data = None  # JoinConf already pairs the data — no separate addon needed
+        else:
+            data = lemur.data(only_best_accuracy=True, task=prompt_dict_key['task']).groupby(by='nn').sample(n=1)[:test_nn]
+            addon_task = prompt_dict_key.get('addon_task')
+            addon_data = lemur.data(only_best_accuracy=True, task=addon_task) if addon_task else None
 
         for _, row in data.iterrows():
             para_dict = dict()
@@ -437,93 +458,103 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
             prompts.append((prompt.format(**para_dict), row))
 
     models_dir = synth_dir(out_path)
+    pending = list(enumerate(prompts))
 
-    for idx, prompt in tqdm(enumerate(prompts)):
-        model_dir = models_dir / f'B{idx}'
-        prompt, origdf = prompt
+    if prompt_batch < 1:
+        prompt_batch = 1
+    if prompt_batch > 1:
+        print(f'[INFO] Batch generation enabled: prompt_batch={prompt_batch}')
 
-        # print(f"\n[DEBUG B{idx}] Prompt length: {len(prompt)} chars")
-        # print(f"[DEBUG B{idx}] First 200 chars of prompt:\n{prompt[:200]}")
+    for start in range(0, len(pending), prompt_batch):
+        batch = pending[start:start + prompt_batch]
+        batch_prompts = [item[1][0] for item in batch]
+        if prompt_batch > 1 and hasattr(chat_bot, 'chat_batch'):
+            batch_outputs = chat_bot.chat_batch(batch_prompts, engineer_prompt=False, max_new_tokens=max_new_tokens)
+        else:
+            batch_outputs = [chat_bot.chat(p, engineer_prompt=False, max_new_tokens=max_new_tokens) for p in batch_prompts]
 
-        code, hp, tr, full_out = chat_bot.chat(prompt, engineer_prompt=False, max_new_tokens=max_new_tokens)
+        for (idx, prompt_data), output in zip(batch, batch_outputs):
+            model_dir = models_dir / f'B{idx}'
+            prompt, origdf = prompt_data
+            code, hp, tr, full_out = output
 
-        # DEBUG BLOCK - to check the output of the llm
-        print(f"[DEBUG B{idx}] Generated output length: {len(full_out) if full_out else 0} chars")
-        print(f"[DEBUG B{idx}] First 500 chars of output:\n{full_out[:500] if full_out else '(EMPTY)'}")
-        print(f"[DEBUG B{idx}] Extracted code: {'Found' if code else 'None'}")
+            # DEBUG BLOCK - to check the output of the llm
+            print(f"[DEBUG B{idx}] Generated output length: {len(full_out) if full_out else 0} chars")
+            print(f"[DEBUG B{idx}] First 500 chars of output:\n{full_out[:500] if full_out else '(EMPTY)'}")
+            print(f"[DEBUG B{idx}] Extracted code: {'Found' if code else 'None'}")
 
-        if save_llm_output:
-            create_file(model_dir, new_out_file, full_out)
+            if save_llm_output:
+                create_file(model_dir, new_out_file, full_out)
 
-        makedirs(model_dir, exist_ok=True)
+            makedirs(model_dir, exist_ok=True)
 
-        if use_delta and origdf is not None:
-            try:
-                from ab.gpt.util.DeltaUtil import apply_delta, validate_delta
-                from ab.gpt.util.Util import extract_delta
+            if use_delta and origdf is not None:
+                try:
+                    from ab.gpt.util.DeltaUtil import apply_delta, validate_delta
+                    from ab.gpt.util.Util import extract_delta
 
-                delta = extract_delta(full_out)
-                if delta:
-                    if not validate_delta(delta):
-                        print(f'[WARNING] Invalid delta format for model B{idx}, using extracted code as fallback')
-                    else:
-                        baseline_code = origdf.get('nn_code', '')
-                        if baseline_code:
-                            applied_code = apply_delta(baseline_code, delta)
-                            if applied_code:
-                                code = applied_code
-                                print(f'[INFO] Successfully applied delta to baseline code for model B{idx}')
-                            else:
-                                print(f'[WARNING] Failed to apply delta for model B{idx} (delta application returned None), using extracted code as fallback')
+                    delta = extract_delta(full_out)
+                    if delta:
+                        if not validate_delta(delta):
+                            print(f'[WARNING] Invalid delta format for model B{idx}, using extracted code as fallback')
                         else:
-                            print(f'[WARNING] No baseline code found in origdf for model B{idx}, using extracted code')
+                            baseline_code = origdf.get('nn_code', '')
+                            if baseline_code:
+                                applied_code = apply_delta(baseline_code, delta)
+                                if applied_code:
+                                    code = applied_code
+                                    print(f'[INFO] Successfully applied delta to baseline code for model B{idx}')
+                                else:
+                                    print(f'[WARNING] Failed to apply delta for model B{idx} (delta application returned None), using extracted code as fallback')
+                            else:
+                                print(f'[WARNING] No baseline code found in origdf for model B{idx}, using extracted code')
+                    else:
+                        print(f'[WARNING] No delta found in LLM output for model B{idx}, using extracted code as fallback')
+                except ImportError as e:
+                    print(f'[ERROR] Failed to import delta utilities for model B{idx}: {e}. Using extracted code as fallback.')
+                except Exception as e:
+                    print(f'[WARNING] Unexpected error applying delta for model B{idx}: {e}. Using extracted code as fallback.')
+
+            try:
+                print(f'Generated params: {hp}')
+                if hp is not None and hp.strip():
+                    hp = json.loads(hp.replace("'", '"'))
+                    with open(model_dir / hp_file, 'w+') as f:
+                        json.dump(hp, f)
                 else:
-                    print(f'[WARNING] No delta found in LLM output for model B{idx}, using extracted code as fallback')
-            except ImportError as e:
-                print(f'[ERROR] Failed to import delta utilities for model B{idx}: {e}. Using extracted code as fallback.')
+                    print('[WARNING] No hyperparameters generated, skipping hp file')
             except Exception as e:
-                print(f'[WARNING] Unexpected error applying delta for model B{idx}: {e}. Using extracted code as fallback.')
+                print(f'[WARNING] Error processing hyperparameters: {e}')
 
-        try:
-            print(f'Generated params: {hp}')
-            if hp is not None and hp.strip():
-                hp = json.loads(hp.replace("'", '"'))
-                with open(model_dir / hp_file, 'w+') as f:
-                    json.dump(hp, f)
+            try:
+                print(f'Generated transformer:\n\n{tr}\n----\n')
+                if tr is not None and tr.strip():
+                    create_file(model_dir, transformer_file, tr)
+                else:
+                    print('[WARNING] No transformer code generated')
+            except Exception as e:
+                print(f'[WARNING] Error saving transformer: {e}')
+
+            if code is not None and code.strip():
+                create_file(model_dir, new_nn_file, code)
+                print(f'[INFO] Saved code to {model_dir / new_nn_file}')
             else:
-                print('[WARNING] No hyperparameters generated, skipping hp file')
-        except Exception as e:
-            print(f'[WARNING] Error processing hyperparameters: {e}')
+                print(f'[ERROR] No code generated for model B{idx}')
+                continue
 
-        try:
-            print(f'Generated transformer:\n\n{tr}\n----\n')
-            if tr is not None and tr.strip():
-                create_file(model_dir, transformer_file, tr)
+            create_file(model_dir, new_out_file, full_out)
+            df_file = model_dir / 'dataframe.df'
+
+            if origdf is None:
+                if isfile(df_file):
+                    os.remove(df_file)
+                    print(f'[DEBUG]Removed unmatched file: {df_file}')
             else:
-                print('[WARNING] No transformer code generated')
-        except Exception as e:
-            print(f'[WARNING] Error saving transformer: {e}')
+                create_file(model_dir, f"original_{origdf['nn']}.py", origdf['nn_code'])
+                origdf.to_pickle(df_file)
 
-        if code is not None and code.strip():
-            create_file(model_dir, new_nn_file, code)
-            print(f'[INFO] Saved code to {model_dir / new_nn_file}')
-        else:
-            print(f'[ERROR] No code generated for model B{idx}')
-            continue
-
-        create_file(model_dir, new_out_file, full_out)
-        df_file = model_dir / 'dataframe.df'
-
-        if origdf is None:
-            if isfile(df_file):
-                os.remove(df_file)
-                print(f'[DEBUG]Removed unmatched file: {df_file}')
-        else:
-            create_file(model_dir, f"original_{origdf['nn']}.py", origdf['nn_code'])
-            origdf.to_pickle(df_file)
-
-        print('[DEBUG] Release memory.')
-        release_memory()
+            print('[DEBUG] Release memory.')
+            release_memory()
 
     if exists(models_dir):
         NNEval.main(nn_name_prefix, nn_train_epochs, epoch)

@@ -13,9 +13,13 @@ class SimpleCodeLogger:
         self.training_log_file = os.path.join(output_dir, "training_progress.log")
         self.success_codes_file = os.path.join(output_dir, "success_codes.py")
         self.samples_file = os.path.join(output_dir, "generation_samples.jsonl")
+        sft_append_logs = os.getenv("NNGPT_SFT_APPEND_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}
         self.resume_mode = bool(
             os.getenv("NNGPT_RL_RESUME_CHECKPOINT_DIR", "").strip()
             or os.getenv("NNGPT_RL_RESUME_STAGE", "").strip()
+            or os.getenv("NNGPT_SFT_RESUME_TRAINER_CHECKPOINT", "").strip()
+            or os.getenv("NNGPT_SFT_RESUME_STAGE_CHECKPOINT", "").strip()
+            or sft_append_logs
         )
         
         self.total_count = 0

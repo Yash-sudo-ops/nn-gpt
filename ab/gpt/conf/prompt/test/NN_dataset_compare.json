@@ -8,15 +8,17 @@
     "no_repeat": ["dataset"],
     "improve": false,
     "nn_prefixes": [],
-    
+    "output_type": "classification",
+    "nn_code_max_chars": 2000,
+    "max_new_tokens": 20,
     "input_list": [
       { "para": "nn_code",        "value": "nn_code" },
       { "para": "epoch",          "value": "epoch" },
       { "para": "dataset_1",      "value": "dataset" },
       { "para": "norm_acc_1",     "value": "norm_acc" },
       { "para": "dataset_2",      "value": "dataset_2" },
-      { "para": "norm_acc_2",     "value": "norm_acc_2" },
-      { "para": "better_dataset", "value": "better_dataset" }
+      { "para": "norm_acc_2",     "value": "norm_acc_2" }
+     
     ],
 
     "prompt": [
@@ -31,8 +33,8 @@
       "Dataset 2: {dataset_2}",
       "  - Normalized accuracy: {norm_acc_2}",
       "",
-      "On which dataset does this neural network achieve better relative performance?",
-      "Answer with ONLY the dataset name."
+      "On which dataset does this neural network perform better?",
+      "Answer with ONLY the dataset name, nothing else. One of: {dataset_1}, {dataset_2}"
     ],
     "output": [
       "{better_dataset}"

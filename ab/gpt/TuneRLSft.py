@@ -68,10 +68,21 @@ import ab.gpt.TuneRL as TuneRL
 import ab.gpt.TuneRLRaw as TuneRLRaw
 import ab.gpt.util.Reward as RewardUtil
 import ab.gpt.util.SFTUtil as SFTUtil
+import ab.gpt.util.training_runtime as TrainingRuntime
 
 
 _TRAIN_GPU_TOKENS_ENV = "NNGPT_TRAIN_GPU_TOKENS"
+_AUX_GPU_TOKENS_ENV = "NNGPT_AUX_GPU_TOKENS"
 _REWARD_GPU_TOKENS_ENV = "NNGPT_REWARD_GPU_TOKENS"
+
+
+def _sft_runtime_state_hooks() -> TrainingRuntime.RuntimeStateHooks:
+    # SFT reuses the RL reward runtime state so checkpoint resume stays compatible.
+    return TrainingRuntime.RuntimeStateHooks(
+        capture=TuneRL.capture_reward_runtime_state,
+        restore=TuneRL.restore_reward_runtime_state,
+        reset=TuneRL.reset_reward_runtime_state,
+    )
 
 
 def _repo_model_dir(model_id: str) -> Path:
@@ -136,11 +147,84 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_str(name: str, default: str) -> str:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return str(default)
+    return str(raw).strip()
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or raw == "":
         return int(default)
     return int(raw)
+
+
+def resolve_sft_init_adapter() -> str:
+    return _env_str("NNGPT_SFT_INIT_ADAPTER", SFT_INIT_ADAPTER)
+
+
+def resolve_sft_load_initial_adapter() -> bool:
+    return _env_flag("NNGPT_SFT_LOAD_INITIAL_ADAPTER", SFT_LOAD_INITIAL_ADAPTER)
+
+
+def resolve_sft_save_rl_model() -> bool:
+    return _env_flag("NNGPT_SFT_SAVE_RL_MODEL", SFT_SAVE_RL_MODEL)
+
+
+def resolve_sft_model_out() -> str:
+    return _env_str("NNGPT_SFT_MODEL_OUT", SFT_MODEL_OUT)
+
+
+def resolve_sft_log_dir() -> str:
+    return _env_str("NNGPT_SFT_LOG_DIR", SFT_LOG_DIR)
+
+
+def resolve_sft_epoch_root() -> str:
+    return _env_str("NNGPT_SFT_EPOCH_ROOT", SFT_EPOCH_ROOT)
+
+
+def resolve_sft_trainer_out() -> str:
+    return _env_str("NNGPT_SFT_TRAINER_OUT", SFT_TRAINER_OUT)
+
+
+def resolve_sft_num_epochs() -> int:
+    return _env_int("NNGPT_SFT_NUM_EPOCHS", SFT_NUM_EPOCHS)
+
+
+def resolve_sft_save_steps() -> int:
+    return max(1, _env_int("NNGPT_SFT_SAVE_STEPS", 50))
+
+
+def resolve_sft_save_total_limit() -> int:
+    return max(1, _env_int("NNGPT_SFT_SAVE_TOTAL_LIMIT", 4))
+
+
+def _resolve_sft_resume_spec() -> Dict[str, Any]:
+    resume_spec = TrainingRuntime.resolve_resume_spec(
+        trainer_env="NNGPT_SFT_RESUME_TRAINER_CHECKPOINT",
+        stage_env="NNGPT_SFT_RESUME_STAGE_CHECKPOINT",
+        initial_adapter_active=resolve_sft_load_initial_adapter(),
+        initial_adapter_label="NNGPT_SFT_LOAD_INITIAL_ADAPTER",
+        legacy_state_filenames=("reward_state.json",),
+    )
+    return {
+        "mode": resume_spec.mode,
+        "trainer_checkpoint": resume_spec.trainer_checkpoint,
+        "stage_checkpoint_dir": resume_spec.stage_checkpoint_dir,
+        "stage_adapter_dir": resume_spec.stage_adapter_dir,
+        "active": resume_spec.active,
+    }
+
+
+def _sft_grpo_signature_parameters() -> Dict[str, inspect.Parameter]:
+    return dict(inspect.signature(TuneRL.GRPOConfig.__init__).parameters)
+
+
+def _sft_trainer_checkpoint_supported() -> bool:
+    signature_parameters = _sft_grpo_signature_parameters()
+    return "save_strategy" in signature_parameters and "save_steps" in signature_parameters
 
 
 def _runtime_is_main_process(runtime: Dict[str, Any]) -> bool:
@@ -160,46 +244,40 @@ def _resolved_visible_cuda_device_tokens(visible_cuda_devices: int) -> List[str]
 
 
 def _resolve_sft_mode(visible_gpu_tokens: List[str]) -> Dict[str, str]:
-    requested_mode = os.getenv("NNGPT_SFT_MODE", SFT_MODE_DEFAULT).strip().lower()
-    if requested_mode == "":
-        requested_mode = SFT_MODE_DEFAULT
-    if requested_mode not in {"auto", "split", "single"}:
-        raise ValueError(
-            f"Invalid NNGPT_SFT_MODE={requested_mode!r}. Expected one of: auto, split, single."
-        )
-    if not visible_gpu_tokens:
-        raise RuntimeError("SFT RL requires at least one visible CUDA device.")
-    if requested_mode == "auto":
-        resolved_mode = "split" if len(visible_gpu_tokens) >= 2 else "single"
-    else:
-        resolved_mode = requested_mode
+    role_plan = TrainingRuntime.resolve_role_plan(
+        visible_gpu_tokens=visible_gpu_tokens,
+        requested_mode_env="NNGPT_SFT_MODE",
+        default_mode=SFT_MODE_DEFAULT,
+    )
     return {
-        "requested_mode": requested_mode,
-        "resolved_mode": resolved_mode,
+        "requested_mode": str(role_plan.requested_mode),
+        "resolved_mode": str(role_plan.resolved_mode),
     }
 
 
 def _configure_sft_gpu_role_env(visible_cuda_devices: int) -> Dict[str, List[str] | str]:
     visible_gpu_tokens = _resolved_visible_cuda_device_tokens(visible_cuda_devices)
-    mode_info = _resolve_sft_mode(visible_gpu_tokens)
-    resolved_mode = str(mode_info["resolved_mode"])
-    train_gpu_tokens = visible_gpu_tokens[:1]
-    if resolved_mode == "split":
-        reward_gpu_tokens = list(visible_gpu_tokens)
-    else:
-        reward_gpu_tokens = list(train_gpu_tokens)
+    role_plan = TrainingRuntime.resolve_role_plan(
+        visible_gpu_tokens=visible_gpu_tokens,
+        requested_mode_env="NNGPT_SFT_MODE",
+        default_mode=SFT_MODE_DEFAULT,
+    )
+    train_gpu_tokens = list(role_plan.train_gpu_tokens)
+    reward_gpu_tokens = list(role_plan.aux_gpu_tokens)
     if train_gpu_tokens:
         os.environ[_TRAIN_GPU_TOKENS_ENV] = ",".join(train_gpu_tokens)
     else:
         os.environ.pop(_TRAIN_GPU_TOKENS_ENV, None)
     if reward_gpu_tokens:
+        os.environ[_AUX_GPU_TOKENS_ENV] = ",".join(reward_gpu_tokens)
         os.environ[_REWARD_GPU_TOKENS_ENV] = ",".join(reward_gpu_tokens)
     else:
+        os.environ.pop(_AUX_GPU_TOKENS_ENV, None)
         os.environ.pop(_REWARD_GPU_TOKENS_ENV, None)
     return {
-        "requested_mode": str(mode_info["requested_mode"]),
-        "resolved_mode": resolved_mode,
-        "visible_gpu_tokens": list(visible_gpu_tokens),
+        "requested_mode": str(role_plan.requested_mode),
+        "resolved_mode": str(role_plan.resolved_mode),
+        "visible_gpu_tokens": list(role_plan.visible_gpu_tokens),
         "train_gpu_tokens": list(train_gpu_tokens),
         "reward_gpu_tokens": list(reward_gpu_tokens),
     }
@@ -846,7 +924,7 @@ def load_rl_dataset_sft(tokenizer) -> TuneRL.Dataset:
 
 
 def sft_run_epoch_dir(*args) -> Path:
-    epoch_dir = Path(SFT_EPOCH_ROOT)
+    epoch_dir = Path(resolve_sft_epoch_root())
     for value in args:
         epoch_dir = epoch_dir / f"A{value}"
     return epoch_dir
@@ -859,7 +937,7 @@ def _build_sft_grpo_config(
     deepspeed_config_path: str | None,
     runtime_settings: Dict[str, int],
 ) -> Any:
-    config_signature = inspect.signature(TuneRL.GRPOConfig.__init__)
+    signature_parameters = _sft_grpo_signature_parameters()
     config_kwargs: Dict[str, Any] = {
         "temperature": SFT_TEMPERATURE,
         "learning_rate": SFT_LR,
@@ -867,28 +945,34 @@ def _build_sft_grpo_config(
         "per_device_train_batch_size": 1,
         "gradient_accumulation_steps": runtime_settings["grad_accum"],
         "lr_scheduler_type": "cosine",
-        "num_train_epochs": SFT_NUM_EPOCHS,
+        "num_train_epochs": resolve_sft_num_epochs(),
         "remove_unused_columns": False,
         "logging_steps": 1,
-        "output_dir": SFT_TRAINER_OUT,
+        "output_dir": resolve_sft_trainer_out(),
         "eval_strategy": "no",
         "bf16": precision["bf16"],
         "fp16": precision["fp16"],
         "gradient_checkpointing": True,
         "num_generations": runtime_settings["global_num_generations"],
     }
+    if "save_strategy" in signature_parameters:
+        config_kwargs["save_strategy"] = "steps"
+    if "save_steps" in signature_parameters:
+        config_kwargs["save_steps"] = resolve_sft_save_steps()
+    if "save_total_limit" in signature_parameters:
+        config_kwargs["save_total_limit"] = resolve_sft_save_total_limit()
     explicit_kl_coef = TuneRL.env_float("NNGPT_RL_KL_COEF", SFT_KL_COEF)
-    if "beta" in config_signature.parameters:
+    if "beta" in signature_parameters:
         config_kwargs["beta"] = explicit_kl_coef
-    elif "kl_coef" in config_signature.parameters:
+    elif "kl_coef" in signature_parameters:
         config_kwargs["kl_coef"] = explicit_kl_coef
     else:
         raise RuntimeError("Installed GRPOConfig does not expose `beta` or `kl_coef`; cannot set explicit KL control")
     if use_deepspeed:
-        if "deepspeed" not in config_signature.parameters:
+        if "deepspeed" not in signature_parameters:
             raise RuntimeError("Installed GRPOConfig does not support the `deepspeed` argument")
         config_kwargs["deepspeed"] = deepspeed_config_path
-        if "ds3_gather_for_generation" in config_signature.parameters:
+        if "ds3_gather_for_generation" in signature_parameters:
             config_kwargs["ds3_gather_for_generation"] = False
     return TuneRL.GRPOConfig(**config_kwargs)
 
@@ -899,6 +983,20 @@ def run_sft_training():
 
     if not torch.cuda.is_available():
         raise RuntimeError("SFT RL requires CUDA for GRPO training, but no CUDA device is available")
+    resume_spec = _resolve_sft_resume_spec()
+    load_initial_adapter = resolve_sft_load_initial_adapter()
+    init_adapter_path = resolve_sft_init_adapter()
+    save_rl_model = resolve_sft_save_rl_model()
+    model_out_path = resolve_sft_model_out()
+    trainer_checkpoint_supported = _sft_trainer_checkpoint_supported()
+    if resume_spec["mode"] == "trainer":
+        train_signature = inspect.signature(TuneRL.GRPOTrainer.train)
+        if "resume_from_checkpoint" not in train_signature.parameters:
+            raise RuntimeError("Installed GRPOTrainer does not support trainer resume_from_checkpoint.")
+        if not trainer_checkpoint_supported:
+            raise RuntimeError(
+                "Installed GRPOConfig does not support save_strategy/save_steps, so trainer checkpoint resume is unavailable."
+            )
     runtime = RewardUtil.get_distributed_runtime_info()
     runtime_settings = resolve_sft_runtime_settings(runtime)
     _validate_sft_visible_worker_count(runtime)
@@ -923,7 +1021,16 @@ def run_sft_training():
     )
 
     torch.cuda.empty_cache()
-    TuneRL.reset_reward_runtime_state()
+    trainer_checkpoint = resume_spec["trainer_checkpoint"]
+    stage_checkpoint_dir = resume_spec["stage_checkpoint_dir"]
+    stage_adapter_dir = resume_spec["stage_adapter_dir"]
+    resume_state_dir = trainer_checkpoint if trainer_checkpoint is not None else stage_checkpoint_dir
+    # Restore reward-side bookkeeping the same way for trainer and stage checkpoints.
+    restored_reward_state_path = TrainingRuntime.restore_or_reset_runtime_state(
+        resume_state_dir,
+        _sft_runtime_state_hooks(),
+        legacy_state_filenames=("reward_state.json",),
+    )
     precision = TuneRL.best_mixed_precision()
     grpo_config = _build_sft_grpo_config(
         precision=precision,
@@ -932,6 +1039,13 @@ def run_sft_training():
         runtime_settings=runtime_settings,
     )
     hf_deepspeed_config = _maybe_init_hf_deepspeed_config(deepspeed_config_path) if use_deepspeed else None
+    if not trainer_checkpoint_supported:
+        print(
+            "[SFT RL] Warning: installed GRPOConfig does not support save_strategy/save_steps; "
+            "trainer checkpoints will not be produced."
+        )
+    if restored_reward_state_path is not None:
+        print(f"[SFT RL] Restored reward state from {restored_reward_state_path}")
 
     print(f"Using RL base model: {TuneRL.base_model}")
     print(
@@ -1023,13 +1137,13 @@ def run_sft_training():
     _ = hf_deepspeed_config
     TuneRL.log_memory_snapshot("sft/base_model_loaded")
 
-    if SFT_LOAD_INITIAL_ADAPTER:
-        if not SFT_INIT_ADAPTER:
+    if load_initial_adapter:
+        if not init_adapter_path:
             raise ValueError("SFT_INIT_ADAPTER is empty, but SFT_LOAD_INITIAL_ADAPTER is True.")
-        if not os.path.exists(SFT_INIT_ADAPTER):
-            raise FileNotFoundError(f"Initial adapter not found: {SFT_INIT_ADAPTER}")
-        print(f"Loading initial SFT adapter from {SFT_INIT_ADAPTER}...")
-        model = TuneRL.PeftModel.from_pretrained(model, SFT_INIT_ADAPTER)
+        if not os.path.exists(init_adapter_path):
+            raise FileNotFoundError(f"Initial adapter not found: {init_adapter_path}")
+        print(f"Loading initial SFT adapter from {init_adapter_path}...")
+        model = TuneRL.PeftModel.from_pretrained(model, init_adapter_path)
         model = model.merge_and_unload()
 
     model = TuneRL.prepare_model_for_kbit_training(model)
@@ -1043,13 +1157,21 @@ def run_sft_training():
         bias="none",
         task_type="CAUSAL_LM",
     )
-    model = TuneRL.get_peft_model(model, peft_config)
+    if stage_adapter_dir is not None:
+        if not stage_adapter_dir.exists():
+            raise FileNotFoundError(f"Missing adapter directory under SFT stage checkpoint: {stage_adapter_dir}")
+        print(f"[SFT RL] Loading stage checkpoint adapter from {stage_adapter_dir}...")
+        model = TuneRL.PeftModel.from_pretrained(model, str(stage_adapter_dir), is_trainable=True)
+    else:
+        model = TuneRL.get_peft_model(model, peft_config)
     TuneRL.align_generation_head_dtype(model, precision["torch_dtype"])
 
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
     model.print_trainable_parameters()
     TuneRL.log_memory_snapshot("sft/lora_wrapped")
+    TuneRL.active_rl_model = model
+    TuneRL.active_rl_tokenizer = tokenizer
 
     trainer = TuneRL.GRPOTrainer(
         model=model,
@@ -1057,6 +1179,14 @@ def run_sft_training():
         reward_funcs=TuneRL.compute_reward,
         args=grpo_config,
     )
+    if trainer_checkpoint_supported:
+        # Keep legacy reward_state.json in trainer checkpoints so old resumes still work.
+        runtime_callback = TrainingRuntime.build_trainer_checkpoint_callback(
+            _sft_runtime_state_hooks(),
+            state_aliases=("reward_state.json",),
+        )
+        if runtime_callback is not None:
+            trainer.add_callback(runtime_callback)
     TuneRL.log_memory_snapshot("sft/grpo_trainer_initialized")
     warmup_diagnostics = RewardUtil.prewarm_eval_workers(timeout_seconds=60.0, require_gpu=True)
     _validate_gpu_reward_worker_bindings(warmup_diagnostics)
@@ -1066,7 +1196,11 @@ def run_sft_training():
     memory_monitor = TuneRL.start_cuda_memory_monitor("sft/trainer")
     try:
         TuneRL.log_memory_snapshot("sft/before_trainer_train")
-        trainer.train()
+        if trainer_checkpoint is not None:
+            print(f"[SFT RL] Resuming trainer state from {trainer_checkpoint}...")
+            trainer.train(resume_from_checkpoint=str(trainer_checkpoint))
+        else:
+            trainer.train()
     except Exception as exc:
         if TuneRL.is_cuda_oom_error(exc):
             TuneRL.log_cuda_oom_diagnostics("sft/trainer.train", exc)
@@ -1076,12 +1210,18 @@ def run_sft_training():
             memory_monitor.close()
         RewardUtil.shutdown_eval_worker()
 
-    if SFT_SAVE_RL_MODEL:
-        print(f"Saving model to {SFT_MODEL_OUT}...")
-        model.save_pretrained(SFT_MODEL_OUT)
+    if save_rl_model:
+        print(f"Saving model to {model_out_path}...")
+        model.save_pretrained(model_out_path)
         print("Model saved successfully!")
     else:
         print("[SFT RL] Skipping RL adapter save. Next run will start from the same initial model.")
+    if _runtime_is_main_process(runtime):
+        TuneRL._save_stage_checkpoint(
+            "completed",
+            stage_name=TuneRL.current_stage_name,
+            reason="sft_trainer_completed",
+        )
 
     return model
 
@@ -1089,18 +1229,20 @@ def run_sft_training():
 def patch_sft_runtime() -> tuple[str, str, str]:
     """Patch TuneRL to use the SFT runtime and CIFAR-aware reward."""
     model_source, tokenizer_source, source_mode = resolve_sft_model_sources()
+    load_initial_adapter = resolve_sft_load_initial_adapter()
+    init_adapter_path = resolve_sft_init_adapter()
     TuneRL.base_model = model_source
     TuneRL.tokenizer_source = tokenizer_source
-    TuneRL.LOAD_EXISTING_MODEL = SFT_LOAD_INITIAL_ADAPTER
-    TuneRL.SAVED_MODEL_PATH = SFT_INIT_ADAPTER if SFT_LOAD_INITIAL_ADAPTER else ""
+    TuneRL.LOAD_EXISTING_MODEL = load_initial_adapter
+    TuneRL.SAVED_MODEL_PATH = init_adapter_path if load_initial_adapter else ""
     TuneRL.PROMPT_TEMPLATE = SFT_DISCOVERY_PROMPT_TEMPLATE
     TuneRL.extract_completion_blocks = TuneRLRaw.extract_completion_blocks_tolerant
     TuneRL.evaluate_code_and_reward = evaluate_code_and_reward_cifar
     setattr(TuneRL.evaluate_code_and_reward, "_nngpt_eval_cfg_builder", build_sft_reward_eval_cfg)
     TuneRL.reward_fn = sft_reward_fn
     TuneRL.load_rl_dataset = load_rl_dataset_sft
-    TuneRL.run_log_dir = lambda: SFT_LOG_DIR
-    TuneRL.run_model_out = lambda: SFT_MODEL_OUT
+    TuneRL.run_log_dir = resolve_sft_log_dir
+    TuneRL.run_model_out = resolve_sft_model_out
     TuneRL.run_epoch_dir = sft_run_epoch_dir
     TuneRLRaw.RAW_ASSISTANT_PREFIX = ""
     return model_source, tokenizer_source, source_mode
@@ -1112,11 +1254,16 @@ def bootstrap_sft_runtime() -> None:
     RewardUtil.shutdown_eval_worker()
     runtime = RewardUtil.get_distributed_runtime_info()
     is_main = _runtime_is_main_process(runtime)
+    resume_spec = _resolve_sft_resume_spec()
+    if resume_spec["active"]:
+        os.environ["NNGPT_SFT_APPEND_LOGS"] = "1"
+    else:
+        os.environ.pop("NNGPT_SFT_APPEND_LOGS", None)
 
     log_dir = TuneRL.run_log_dir()
     os.makedirs(log_dir, exist_ok=True)
     sentinel_path = _bootstrap_sentinel_path(log_dir, runtime)
-    trainer_out_dir = Path(SFT_TRAINER_OUT)
+    trainer_out_dir = Path(resolve_sft_trainer_out())
     stale_files = (
         "generation_samples.jsonl",
         "group_progress.jsonl",
@@ -1126,15 +1273,21 @@ def bootstrap_sft_runtime() -> None:
     if is_main:
         if sentinel_path.exists():
             sentinel_path.unlink()
-        for filename in stale_files:
-            path = Path(log_dir) / filename
-            if path.exists():
-                print(f"Removing stale runtime log: {path}")
-                path.unlink()
-        print(f"Cleaning existing models in {TuneRL.run_epoch_dir()}...")
-        shutil.rmtree(TuneRL.run_epoch_dir(), ignore_errors=True)
-        print(f"Cleaning existing trainer outputs in {trainer_out_dir}...")
-        shutil.rmtree(trainer_out_dir, ignore_errors=True)
+        if resume_spec["active"]:
+            print(
+                f"[SFT RL] Resume mode active: preserving logs and trainer outputs "
+                f"(mode={resume_spec['mode']}, log_dir={log_dir}, trainer_out={trainer_out_dir})"
+            )
+        else:
+            for filename in stale_files:
+                path = Path(log_dir) / filename
+                if path.exists():
+                    print(f"Removing stale runtime log: {path}")
+                    path.unlink()
+            print(f"Cleaning existing models in {TuneRL.run_epoch_dir()}...")
+            shutil.rmtree(TuneRL.run_epoch_dir(), ignore_errors=True)
+            print(f"Cleaning existing trainer outputs in {trainer_out_dir}...")
+            shutil.rmtree(trainer_out_dir, ignore_errors=True)
         TuneRL.code_logger = TuneRLRaw.RawCodeLogger(log_dir)
         sentinel_path.write_text(str(os.getpid()), encoding="utf-8")
         return
@@ -1146,6 +1299,7 @@ def bootstrap_sft_runtime() -> None:
 def main() -> None:
     import torch
 
+    resume_spec = _resolve_sft_resume_spec()
     gpu_role_plan: Dict[str, List[str] | str] = {
         "requested_mode": "auto",
         "resolved_mode": "single",
@@ -1172,9 +1326,18 @@ def main() -> None:
     print(f"[SFT RL] Base model source ({source_mode}): {model_source}")
     if tokenizer_source != model_source:
         print(f"[SFT RL] Tokenizer source: {tokenizer_source}")
-    print(f"[SFT RL] Load init adapter: {SFT_LOAD_INITIAL_ADAPTER}")
-    if SFT_LOAD_INITIAL_ADAPTER:
-        print(f"[SFT RL] Init adapter path: {SFT_INIT_ADAPTER}")
+    print(f"[SFT RL] Resume mode: {resume_spec['mode']}")
+    print(f"[SFT RL] Load init adapter: {resolve_sft_load_initial_adapter()}")
+    if resolve_sft_load_initial_adapter():
+        print(f"[SFT RL] Init adapter path: {resolve_sft_init_adapter()}")
+    if resume_spec["trainer_checkpoint"] is not None:
+        print(f"[SFT RL] Resume trainer checkpoint: {resume_spec['trainer_checkpoint']}")
+    if resume_spec["stage_checkpoint_dir"] is not None:
+        print(f"[SFT RL] Resume stage checkpoint: {resume_spec['stage_checkpoint_dir']}")
+    print(f"[SFT RL] Log dir: {resolve_sft_log_dir()}")
+    print(f"[SFT RL] Trainer out: {resolve_sft_trainer_out()}")
+    print(f"[SFT RL] Model out: {resolve_sft_model_out()}")
+    print(f"[SFT RL] Num epochs: {resolve_sft_num_epochs()}")
     print(f"[SFT RL] Temperature: {SFT_TEMPERATURE}")
     print(f"[SFT RL] KL coef: {TuneRL.env_float('NNGPT_RL_KL_COEF', SFT_KL_COEF):.6f}")
     print(
@@ -1185,7 +1348,7 @@ def main() -> None:
         f"worker_eval_limit_seconds={SFT_EVAL_LIMIT_SECONDS}, "
         f"baseline={SFT_VAL_METRIC_BASELINE:.2f}"
     )
-    print(f"[SFT RL] Save RL adapter: {SFT_SAVE_RL_MODEL}")
+    print(f"[SFT RL] Save RL adapter: {resolve_sft_save_rl_model()}")
 
     run_sft_training()
 

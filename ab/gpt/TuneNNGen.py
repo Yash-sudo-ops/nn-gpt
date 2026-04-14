@@ -2,23 +2,18 @@ import argparse
 from typing import Literal
 
 import torch
-from ab.gpt.util.Const import nngpt_dir, new_out_file, NN_TRAIN_EPOCHS
+from ab.gpt.util.Const import nngpt_dir, NN_TRAIN_EPOCHS
 
 from ab.nn.util.Const import out_dir
 
-from pathlib import Path
 import json
 from ab.gpt.util.Const import conf_llm_dir
 
 RUN_META = out_dir / 'nngpt' / 'run_config.json'
 
 
-def persist_llm_conf(llm_conf):
-    """Save run configuration including llm_conf and base_model_name."""
-
-
-    if RUN_META.exists():
-        return
+def persist_llm_conf(llm_conf, enable_merge=False):
+    """Save run configuration including llm_conf, base_model_name, and enable_merge."""
 
     RUN_META.parent.mkdir(parents=True, exist_ok=True)
 
@@ -34,10 +29,13 @@ def persist_llm_conf(llm_conf):
         except Exception as e:
             print(f"Failed to read base_model_name from {llm_conf}: {e}")
 
-    # Save both llm_conf and base_model_name
-    run_config = {"llm_conf": llm_conf}
+    # Save llm_conf, base_model_name, and enable_merge
+    run_config = {
+        "llm_conf": llm_conf,
+        "enable_merge": enable_merge
+    }
     if base_model_name:
-        run_config["base_model_name"] = base_model_name #infers from conf_llm and stores it
+        run_config["base_model_name"] = base_model_name
 
     with open(RUN_META, "w") as f:
         json.dump(run_config, f, indent=2)
@@ -56,7 +54,7 @@ BiasType = Literal['none', 'all', 'lora_only']
 BIAS: BiasType = 'none'
 LEARNING_RATE = 1e-6  # Conservative default for standalone
 MAX_GRAD_NORM = 1.0  # Gradient clipping
-
+ENABLE_MERGE = False
 PEFT = None
 SKIP_EPOCHES = -1
 
@@ -144,7 +142,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          llm_conf=LLM_CONF, test_nn=TEST_NN, peft=PEFT, skip_epoches=SKIP_EPOCHES, per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
          gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS, warmup_ratio=WARMUP_RATIO, logging_steps=LOGGING_STEPS, optimizer=OPTIMIZER,
          max_prompts=MAX_PROMPTS, save_llm_output=SAVE_LLM_OUTPUT, max_new_tokens=MAX_NEW_TOKENS, use_deepspeed=USE_DEEPSPEED, nn_name_prefix=NN_NAME_PREFIX,
-         nn_train_epochs=NN_TRAIN_EPOCHS, temperature=TEMPERATURE, top_k=TOP_K, top_p=TOP_P, data_dir=None,
+         nn_train_epochs=NN_TRAIN_EPOCHS, temperature=TEMPERATURE, top_k=TOP_K, top_p=TOP_P, data_dir=None,base_data_dir=None,output_dir=None,
          # Pipeline-specific overrides (for backward compatibility with iterative_finetune.py)
          evaluation_strategy=None, eval_steps=None, save_strategy=None, save_steps=None,
          save_total_limit=None, load_best_model_at_end=False, metric_for_best_model=None, warmup_steps=None, weight_decay=None,
@@ -154,8 +152,9 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          run_iterative_pipeline=False, cycles=5, models_per_cycle=150, samples_per_prompt=1, accuracy_threshold=0.40,
          min_selected_k=15, fallback_threshold=0.35, adaptive_threshold=False,
          novelty_check=True, resume_from_cycle=None, max_retries=3, use_optimized_training=True,
-         use_agents=USE_AGENTS, use_predictor=USE_PREDICTOR, use_backbone=False):
-    persist_llm_conf(llm_conf)
+         use_agents=USE_AGENTS, use_predictor=USE_PREDICTOR, use_backbone=False,
+         classification_mode=False):
+    persist_llm_conf(llm_conf, enable_merge)
     # --- Pipeline mode intercept ---
     if run_iterative_pipeline:
         print("--- Initiating Iterative Fine-Tuning Pipeline ---")
@@ -312,9 +311,20 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
     except Exception as e:
         print(f"[WARN] peft_config validation warning: {e}")
 
-    from pathlib import Path
-    import subprocess
+    print(f"\n[DEBUG] === TUNENNGEN MAIN START ===")
+    print(f"[DEBUG] llm_conf: {llm_conf}")
+    print(f"[DEBUG] enable_merge: {enable_merge}")
+    print(f"[DEBUG] nngpt_dir: {nngpt_dir}")
 
+    # Show what was written to config
+    run_config_path = out_dir / 'nngpt' / 'run_config.json'
+    if run_config_path.exists():
+        with open(run_config_path) as f:
+            cfg = json.load(f)
+        print(f"[CONFIG] run_config.json current state:")
+        print(f"[CONFIG]   base_model_name: {cfg.get('base_model_name')}")
+        print(f"[CONFIG]   enable_merge: {cfg.get('enable_merge')}")
+    print(f"[DEBUG] === ===\n")
     try:
         tune(
             test_nn, nn_train_epochs, skip_epoches, peft,
@@ -332,23 +342,49 @@ unsloth_opt={unsloth_opt}, trans_mode={trans_mode}, prompt_batch={prompt_batch},
             prompt_batch=prompt_batch,
             use_agents=use_agents,
             use_predictor=use_predictor,
+            enable_merge=enable_merge,
+            use_unsloth=unsloth_opt,
+            classification_mode=classification_mode,
         )
+
+        # Normal completion - auto merge best
+        if enable_merge:
+            print("\n[DEBUG] === NORMAL COMPLETION MERGE ===")
+            print(f"[DEBUG] enable_merge is True")
+            print(f"[DEBUG] About to import Merge module")
+            print("\n[MERGE] Training complete - running auto merge...\n")
+            try:
+                print(f"[DEBUG] Importing from ab.gpt.util.Merge")
+                from ab.gpt.util.MergeLLM import rebuild_from_lineage
+                print(f"[DEBUG] ✓ Import successful")
+                print(f"[DEBUG] Calling rebuild_from_lineage()")
+                rebuild_from_lineage()
+                print(f"[DEBUG] ✓ rebuild_from_lineage() completed")
+            except Exception as e:
+                print(f"[MERGE] Auto merge failed: {e}")
+                import traceback
+                traceback.print_exc()
 
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Training stopped by user")
 
     finally:
-        # Safety merge: run merge decision even if training crashes or is interrupted
+        # Interrupted case - still try to merge best from available epochs
         if enable_merge:
-            print("\n[MERGE] Running final merge decision...\n")
-
+            print("\n[DEBUG] === FINALLY BLOCK MERGE ===")
+            print(f"[DEBUG] enable_merge is True in finally block")
+            print("\n[MERGE] Running emergency merge (interrupted)...\n")
             try:
-                from ab.gpt.util.Mergedecision import main as merge
-                merge()
-                print("[MERGE] Completed successfully.\n")
-
+                print(f"[DEBUG] Importing from ab.gpt.util.Merge in finally")
+                from ab.gpt.util.MergeLLM import rebuild_from_lineage
+                print(f"[DEBUG] ✓ Import successful in finally")
+                print(f"[DEBUG] Calling rebuild_from_lineage() from finally")
+                rebuild_from_lineage()
+                print(f"[DEBUG] ✓ rebuild_from_lineage() completed in finally")
             except Exception as e:
-                print(f"[MERGE] Merge decision failed: {e}")
+                print(f"[MERGE] Emergency merge failed: {e}")
+                import traceback
+                traceback.print_exc()
 
     print("FINE-TUNING CONFIGURATION SUMMARY")
     print("=" * 70)

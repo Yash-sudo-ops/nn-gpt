@@ -145,6 +145,8 @@ def get_distributed_runtime_info() -> Dict[str, Any]:
         visible_gpu_tokens = [str(index) for index in range(max(0, visible_gpu_count))]
     configured_train_gpu_tokens = _configured_cuda_device_tokens("NNGPT_TRAIN_GPU_TOKENS")
     configured_reward_gpu_tokens = _configured_cuda_device_tokens("NNGPT_REWARD_GPU_TOKENS")
+    if configured_reward_gpu_tokens is None:
+        configured_reward_gpu_tokens = _configured_cuda_device_tokens("NNGPT_AUX_GPU_TOKENS")
 
     train_gpu = local_rank if visible_gpu_count > 0 else None
     train_gpu_token = None

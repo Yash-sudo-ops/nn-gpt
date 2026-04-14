@@ -9,7 +9,7 @@ from transformers import PreTrainedTokenizerBase
 from ab.gpt.util.prompt.Prompt import Prompt
 from tqdm import tqdm
 
-from ab.nn.api import JoinConf
+from ab.nn.util.db.Query import JoinConf
 
 
 def shuffle_data(df: DataFrame):
@@ -48,11 +48,14 @@ class NNGenPrompt(Prompt):
             # For JOIN queries, do NOT pass max_rows — the LIMIT applies before
             # the JOIN and causes an O(n²) correlated scan. Slice the result after.
             use_join = num_joint_nns >= 2
+            # For JOIN queries, cap rows to avoid O(n²) scan on the temp table.
+            # Slice to n_training_prompts after the fact instead of relying on LIMIT inside the JOIN.
+            join_cap = 1000
             data = lemur.data(
                 only_best_accuracy=only_best_accuracy,
                 task=key_dict.get('task'),
                 nn_prefixes=tuple(key_dict.get('nn_prefixes')),
-                max_rows=n_training_prompts,
+                max_rows=join_cap if use_join else n_training_prompts,
                 sql=None if not use_join else JoinConf(
                     num_joint_nns=num_joint_nns,
                     same_columns=tuple(key_dict.get('keep_same', [])),
@@ -73,6 +76,20 @@ class NNGenPrompt(Prompt):
                 para_dict = dict()
                 for it in prompt_dict[key]['input_list']:
                     para_dict[it['para']] = row[it['value']]
+
+                nn_code_max_chars = key_dict.get('nn_code_max_chars')
+                if nn_code_max_chars and 'nn_code' in para_dict and isinstance(para_dict['nn_code'], str):
+                    para_dict['nn_code'] = para_dict['nn_code'][:nn_code_max_chars]
+
+                # Inject columns referenced in the output template but absent from input_list
+                # (e.g. better_dataset for classification tasks). Only applies when output_type
+                # is 'classification' so other tasks are unaffected.
+                if key_dict.get('output_type') == 'classification':
+                    output_template = '\n'.join(key_dict['output'])
+                    for col in row.index:
+                        if f'{{{col}}}' in output_template and col not in para_dict:
+                            para_dict[col] = row[col]
+
                 inst = prompt.format(**para_dict)
 
                 # Compute delta if delta mode is enabled

@@ -1457,6 +1457,12 @@ def _base_eval_result(
         "loss_end": None,
         "loss_drop": None,
         "loss_drop_ok": False,
+        "best_epoch_loss": None,
+        "avg_epoch_loss": None,
+        "epochs_completed": 0,
+        "epoch_loss_series": [],
+        "training_context_metric_name": "best_epoch_loss",
+        "training_context_metric_value": None,
         "train_acc": None,
         "seed_accuracy_baseline": seed_accuracy_baseline,
         "seed_train_acc_gap": None,
@@ -1514,6 +1520,12 @@ def _nested_eval_payload(
         "loss_end": result.get("loss_end"),
         "loss_drop": result.get("loss_drop"),
         "loss_drop_ok": result.get("loss_drop_ok"),
+        "best_epoch_loss": result.get("best_epoch_loss"),
+        "avg_epoch_loss": result.get("avg_epoch_loss"),
+        "epochs_completed": result.get("epochs_completed"),
+        "epoch_loss_series": list(result.get("epoch_loss_series") or []),
+        "training_context_metric_name": result.get("training_context_metric_name"),
+        "training_context_metric_value": result.get("training_context_metric_value"),
         "train_acc": result.get("train_acc"),
         "test_acc": result.get("test_acc", result.get("val_metric")),
         "val_metric": result.get("val_metric"),
@@ -1882,6 +1894,8 @@ def _train_steps(
     loss_start = None
     loss_end = None
     steps_completed = 0
+    epoch_loss_series: list[float] = []
+    epochs_completed = 0
     try:
         trainable_params = _trainable_parameters(model)
         if not trainable_params:
@@ -1893,6 +1907,12 @@ def _train_steps(
                 "loss_drop": None,
                 "loss_drop_ok": False,
                 "steps_completed": 0,
+                "best_epoch_loss": None,
+                "avg_epoch_loss": None,
+                "epochs_completed": 0,
+                "epoch_loss_series": [],
+                "training_context_metric_name": "best_epoch_loss",
+                "training_context_metric_value": None,
                 "error": "RuntimeError: no trainable parameters remain after freezing backbones",
             }
         opt = torch.optim.SGD(trainable_params, lr=1e-3, momentum=0.9)
@@ -1901,6 +1921,8 @@ def _train_steps(
         effective_max_steps = None if max_steps is None or int(max_steps) <= 0 else int(max_steps)
         stop_early = False
         for _epoch_index in range(effective_epochs):
+            epoch_loss_sum = 0.0
+            epoch_step_count = 0
             for x, y in train_loader:
                 if time_budget is not None:
                     try:
@@ -1915,6 +1937,18 @@ def _train_steps(
                                 "loss_drop": None if loss_start is None or loss_end is None else float(loss_start - loss_end),
                                 "loss_drop_ok": False,
                                 "steps_completed": steps_completed,
+                                "best_epoch_loss": min(epoch_loss_series) if epoch_loss_series else None,
+                                "avg_epoch_loss": (
+                                    float(sum(epoch_loss_series) / len(epoch_loss_series))
+                                    if epoch_loss_series
+                                    else None
+                                ),
+                                "epochs_completed": epochs_completed,
+                                "epoch_loss_series": list(epoch_loss_series),
+                                "training_context_metric_name": "best_epoch_loss",
+                                "training_context_metric_value": (
+                                    min(epoch_loss_series) if epoch_loss_series else None
+                                ),
                             }
                         )
                         raise
@@ -1931,6 +1965,16 @@ def _train_steps(
                         "loss_drop": None,
                         "loss_drop_ok": False,
                         "steps_completed": steps_completed,
+                        "best_epoch_loss": min(epoch_loss_series) if epoch_loss_series else None,
+                        "avg_epoch_loss": (
+                            float(sum(epoch_loss_series) / len(epoch_loss_series))
+                            if epoch_loss_series
+                            else None
+                        ),
+                        "epochs_completed": epochs_completed,
+                        "epoch_loss_series": list(epoch_loss_series),
+                        "training_context_metric_name": "best_epoch_loss",
+                        "training_context_metric_value": min(epoch_loss_series) if epoch_loss_series else None,
                         "error": f"RuntimeError: logits must be (N, C), got {tuple(logits.shape) if hasattr(logits, 'shape') else type(logits)}",
                     }
                 if logits.shape[0] != y.shape[0] or logits.shape[1] != n_classes:
@@ -1942,6 +1986,16 @@ def _train_steps(
                         "loss_drop": None,
                         "loss_drop_ok": False,
                         "steps_completed": steps_completed,
+                        "best_epoch_loss": min(epoch_loss_series) if epoch_loss_series else None,
+                        "avg_epoch_loss": (
+                            float(sum(epoch_loss_series) / len(epoch_loss_series))
+                            if epoch_loss_series
+                            else None
+                        ),
+                        "epochs_completed": epochs_completed,
+                        "epoch_loss_series": list(epoch_loss_series),
+                        "training_context_metric_name": "best_epoch_loss",
+                        "training_context_metric_value": min(epoch_loss_series) if epoch_loss_series else None,
                         "error": f"RuntimeError: logits shape {tuple(logits.shape)} incompatible with labels {tuple(y.shape)} / classes {n_classes}",
                     }
                 loss = criterion(logits, y)
@@ -1954,11 +2008,23 @@ def _train_steps(
                         "loss_drop": None,
                         "loss_drop_ok": False,
                         "steps_completed": steps_completed,
+                        "best_epoch_loss": min(epoch_loss_series) if epoch_loss_series else None,
+                        "avg_epoch_loss": (
+                            float(sum(epoch_loss_series) / len(epoch_loss_series))
+                            if epoch_loss_series
+                            else None
+                        ),
+                        "epochs_completed": epochs_completed,
+                        "epoch_loss_series": list(epoch_loss_series),
+                        "training_context_metric_name": "best_epoch_loss",
+                        "training_context_metric_value": min(epoch_loss_series) if epoch_loss_series else None,
                         "error": "RuntimeError: loss is NaN or Inf",
                     }
                 loss_value = float(loss.detach().item())
                 if loss_start is None:
                     loss_start = loss_value
+                epoch_loss_sum += loss_value
+                epoch_step_count += 1
                 loss.backward()
                 opt.step()
                 loss_end = loss_value
@@ -1976,12 +2042,27 @@ def _train_steps(
                                 "loss_drop": None if loss_start is None or loss_end is None else float(loss_start - loss_end),
                                 "loss_drop_ok": False,
                                 "steps_completed": steps_completed,
+                                "best_epoch_loss": min(epoch_loss_series) if epoch_loss_series else None,
+                                "avg_epoch_loss": (
+                                    float(sum(epoch_loss_series) / len(epoch_loss_series))
+                                    if epoch_loss_series
+                                    else None
+                                ),
+                                "epochs_completed": epochs_completed,
+                                "epoch_loss_series": list(epoch_loss_series),
+                                "training_context_metric_name": "best_epoch_loss",
+                                "training_context_metric_value": (
+                                    min(epoch_loss_series) if epoch_loss_series else None
+                                ),
                             }
                         )
                         raise
                 if effective_max_steps is not None and steps_completed >= effective_max_steps:
                     stop_early = True
                     break
+            if epoch_step_count > 0:
+                epoch_loss_series.append(float(epoch_loss_sum / float(epoch_step_count)))
+                epochs_completed += 1
             if stop_early:
                 break
         if steps_completed == 0 or loss_start is None or loss_end is None:
@@ -1993,11 +2074,27 @@ def _train_steps(
                 "loss_drop": None,
                 "loss_drop_ok": False,
                 "steps_completed": steps_completed,
+                "best_epoch_loss": min(epoch_loss_series) if epoch_loss_series else None,
+                "avg_epoch_loss": (
+                    float(sum(epoch_loss_series) / len(epoch_loss_series))
+                    if epoch_loss_series
+                    else None
+                ),
+                "epochs_completed": epochs_completed,
+                "epoch_loss_series": list(epoch_loss_series),
+                "training_context_metric_name": "best_epoch_loss",
+                "training_context_metric_value": min(epoch_loss_series) if epoch_loss_series else None,
                 "error": "RuntimeError: no training steps completed",
             }
         loss_drop = float(loss_start - loss_end)
         rel_drop_ok = loss_start > 0.0 and (loss_end <= loss_start * 0.98)
         loss_drop_ok = bool(loss_end < (loss_start - 1e-3) or rel_drop_ok)
+        best_epoch_loss = min(epoch_loss_series) if epoch_loss_series else loss_end
+        avg_epoch_loss = (
+            float(sum(epoch_loss_series) / len(epoch_loss_series))
+            if epoch_loss_series
+            else loss_end
+        )
         return {
             "backward_ok": True,
             "trained_step_ok": True,
@@ -2006,6 +2103,12 @@ def _train_steps(
             "loss_drop": loss_drop,
             "loss_drop_ok": loss_drop_ok,
             "steps_completed": steps_completed,
+            "best_epoch_loss": best_epoch_loss,
+            "avg_epoch_loss": avg_epoch_loss,
+            "epochs_completed": epochs_completed,
+            "epoch_loss_series": list(epoch_loss_series),
+            "training_context_metric_name": "best_epoch_loss",
+            "training_context_metric_value": best_epoch_loss,
         }
     except EvalTimeException:
         raise
@@ -2018,6 +2121,16 @@ def _train_steps(
             "loss_drop": None if loss_start is None or loss_end is None else float(loss_start - loss_end),
             "loss_drop_ok": False,
             "steps_completed": steps_completed,
+            "best_epoch_loss": min(epoch_loss_series) if epoch_loss_series else None,
+            "avg_epoch_loss": (
+                float(sum(epoch_loss_series) / len(epoch_loss_series))
+                if epoch_loss_series
+                else None
+            ),
+            "epochs_completed": epochs_completed,
+            "epoch_loss_series": list(epoch_loss_series),
+            "training_context_metric_name": "best_epoch_loss",
+            "training_context_metric_value": min(epoch_loss_series) if epoch_loss_series else None,
             "error": f"{type(exc).__name__}: {exc}",
         }
 
@@ -2727,6 +2840,12 @@ def _timeout_eval_result(
     loss_end: Optional[float] = None,
     loss_drop: Optional[float] = None,
     loss_drop_ok: bool = False,
+    best_epoch_loss: Optional[float] = None,
+    avg_epoch_loss: Optional[float] = None,
+    epochs_completed: int = 0,
+    epoch_loss_series: Optional[list[float]] = None,
+    training_context_metric_name: Optional[str] = "best_epoch_loss",
+    training_context_metric_value: Optional[float] = None,
     latency_ms: Optional[float] = None,
     params_m: Optional[float] = None,
     kl_div: Optional[float] = None,
@@ -2764,6 +2883,12 @@ def _timeout_eval_result(
             "loss_end": loss_end,
             "loss_drop": loss_drop,
             "loss_drop_ok": loss_drop_ok,
+            "best_epoch_loss": best_epoch_loss,
+            "avg_epoch_loss": avg_epoch_loss,
+            "epochs_completed": int(epochs_completed or 0),
+            "epoch_loss_series": list(epoch_loss_series or []),
+            "training_context_metric_name": training_context_metric_name,
+            "training_context_metric_value": training_context_metric_value,
             "latency_ms": latency_ms,
             "params_m": params_m,
             "timed_out": True,
@@ -2832,6 +2957,12 @@ def evaluate_and_reward(
     loss_end = None
     loss_drop = None
     loss_drop_ok = False
+    best_epoch_loss = None
+    avg_epoch_loss = None
+    epochs_completed = 0
+    epoch_loss_series: list[float] = []
+    training_context_metric_name: Optional[str] = "best_epoch_loss"
+    training_context_metric_value = None
     train_acc = None
     seed_train_acc_gap = None
     seed_train_acc_improved = False
@@ -2940,6 +3071,12 @@ def evaluate_and_reward(
             loss_end = train_result["loss_end"]
             loss_drop = train_result["loss_drop"]
             loss_drop_ok = bool(train_result["loss_drop_ok"])
+            best_epoch_loss = train_result.get("best_epoch_loss")
+            avg_epoch_loss = train_result.get("avg_epoch_loss")
+            epochs_completed = int(train_result.get("epochs_completed", 0) or 0)
+            epoch_loss_series = list(train_result.get("epoch_loss_series") or [])
+            training_context_metric_name = train_result.get("training_context_metric_name", "best_epoch_loss")
+            training_context_metric_value = train_result.get("training_context_metric_value")
 
             # 4) Quick validation (accuracy)
             train_metric_batches = max(1, len(used_train_loader))
@@ -2969,6 +3106,18 @@ def evaluate_and_reward(
             loss_drop = partial.get("loss_drop", loss_drop)
             backward_ok = bool(partial.get("backward_ok", False))
             trained_step_ok = bool(partial.get("trained_step_ok", False))
+            best_epoch_loss = partial.get("best_epoch_loss", best_epoch_loss)
+            avg_epoch_loss = partial.get("avg_epoch_loss", avg_epoch_loss)
+            epochs_completed = int(partial.get("epochs_completed", epochs_completed) or 0)
+            epoch_loss_series = list(partial.get("epoch_loss_series") or epoch_loss_series)
+            training_context_metric_name = partial.get(
+                "training_context_metric_name",
+                training_context_metric_name,
+            )
+            training_context_metric_value = partial.get(
+                "training_context_metric_value",
+                training_context_metric_value,
+            )
             return _timeout_eval_result(
                 error=f"{type(exc).__name__}: {exc}",
                 estimated_total_seconds=exc.estimated_total_seconds,
@@ -2984,6 +3133,12 @@ def evaluate_and_reward(
                 loss_end=loss_end,
                 loss_drop=loss_drop,
                 loss_drop_ok=False,
+                best_epoch_loss=best_epoch_loss,
+                avg_epoch_loss=avg_epoch_loss,
+                epochs_completed=epochs_completed,
+                epoch_loss_series=epoch_loss_series,
+                training_context_metric_name=training_context_metric_name,
+                training_context_metric_value=training_context_metric_value,
                 latency_ms=latency_ms,
                 params_m=params_m,
                 kl_div=cfg.kl_div,
@@ -3047,6 +3202,12 @@ def evaluate_and_reward(
                 "loss_end": loss_end,
                 "loss_drop": loss_drop,
                 "loss_drop_ok": loss_drop_ok,
+                "best_epoch_loss": best_epoch_loss,
+                "avg_epoch_loss": avg_epoch_loss,
+                "epochs_completed": epochs_completed,
+                "epoch_loss_series": list(epoch_loss_series),
+                "training_context_metric_name": training_context_metric_name,
+                "training_context_metric_value": training_context_metric_value,
                 "train_acc": train_acc,
                 "seed_train_acc_gap": seed_train_acc_gap,
                 "seed_train_acc_improved": seed_train_acc_improved,
@@ -3064,6 +3225,18 @@ def evaluate_and_reward(
         loss_drop = partial.get("loss_drop", loss_drop)
         backward_ok = bool(partial.get("backward_ok", backward_ok))
         trained_step_ok = bool(partial.get("trained_step_ok", trained_step_ok))
+        best_epoch_loss = partial.get("best_epoch_loss", best_epoch_loss)
+        avg_epoch_loss = partial.get("avg_epoch_loss", avg_epoch_loss)
+        epochs_completed = int(partial.get("epochs_completed", epochs_completed) or 0)
+        epoch_loss_series = list(partial.get("epoch_loss_series") or epoch_loss_series)
+        training_context_metric_name = partial.get(
+            "training_context_metric_name",
+            training_context_metric_name,
+        )
+        training_context_metric_value = partial.get(
+            "training_context_metric_value",
+            training_context_metric_value,
+        )
         return _timeout_eval_result(
             error=f"{type(exc).__name__}: {exc}",
             estimated_total_seconds=exc.estimated_total_seconds,
@@ -3079,6 +3252,12 @@ def evaluate_and_reward(
             loss_end=loss_end,
             loss_drop=loss_drop,
             loss_drop_ok=False,
+            best_epoch_loss=best_epoch_loss,
+            avg_epoch_loss=avg_epoch_loss,
+            epochs_completed=epochs_completed,
+            epoch_loss_series=epoch_loss_series,
+            training_context_metric_name=training_context_metric_name,
+            training_context_metric_value=training_context_metric_value,
             latency_ms=latency_ms,
             params_m=params_m,
             kl_div=cfg.kl_div,
@@ -3909,18 +4088,20 @@ def _persistent_eval_worker_loop(conn, *, worker_device: str, assigned_gpu: Opti
                     val_loader=val_loader,
                 )
             except Exception as exc:
-                _log_reward_worker_memory(
-                    "error",
-                    request=request,
-                    assigned_gpu=assigned_gpu,
-                    worker_device=worker_device,
-                    reward_batch_index=reward_batch_index,
-                    completion_index=completion_index,
-                    error=f"{type(exc).__name__}: {exc}",
-                )
+                error_text = f"{type(exc).__name__}: {exc}"
+                if _is_cuda_oom_error_message(error_text) or _is_fatal_cuda_worker_error(error_text):
+                    _log_reward_worker_memory(
+                        "error",
+                        request=request,
+                        assigned_gpu=assigned_gpu,
+                        worker_device=worker_device,
+                        reward_batch_index=reward_batch_index,
+                        completion_index=completion_index,
+                        error=error_text,
+                    )
                 result = _empty_eval_result(
                     reward=-1.0,
-                    error=f"{type(exc).__name__}: {exc}",
+                    error=error_text,
                     seed_accuracy_baseline=request.get("seed_accuracy_baseline"),
                     eval_limit_seconds=cfg.eval_limit_seconds,
                     backbone_model_names=_extract_backbone_model_names_from_code(request.get("code", "")),

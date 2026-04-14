@@ -2,6 +2,8 @@ import ast
 import csv
 from datetime import timedelta
 import inspect
+import math
+import signal
 import subprocess
 import sys
 import threading
@@ -95,6 +97,7 @@ from pathlib import Path
 from dataclasses import dataclass, asdict
 
 from ab.gpt.util.simple_logger import SimpleCodeLogger
+import ab.gpt.util.training_runtime as TrainingRuntime
 from typing import Tuple, Any, List, Dict, Optional, Set
 from collections import Counter, deque
 
@@ -102,6 +105,7 @@ from collections import Counter, deque
 graph_archive_counts = Counter()
 family_archive_counts = Counter()
 family_hash_archive_counts = Counter()
+descriptor_archive_counts = Counter()
 family_metric_best: Dict[str, float] = {}
 motif_name_counts = Counter()
 saved_graph_counts = Counter()
@@ -169,22 +173,25 @@ STAGE_REFERENCE_MIN_GROUPS = {
 STAGE1_GATE_WINDOW_GENERATIONS = 1600
 STAGE2_GATE_WINDOW_GENERATIONS = 4000
 RECOVERY_GATE_WINDOW_GENERATIONS = 2000
+STAGE1_PROMOTION_MIN_GROUPS = 20
 STAGE1_GATE_EXECUTABLE_MIN = 96
 STAGE1_GATE_DISCOVERY_MIN = 8
 STAGE1_GATE_UNIQUE_DISCOVERY_FAMILIES_MIN = 6
-STAGE1_FORCE_PROMOTION_MIN_GROUPS = 10
 STAGE1_FORCE_PROMOTION_EXECUTABLE_MIN = 800
 STAGE1_FORCE_PROMOTION_DISCOVERY_MIN = 8
 STAGE1_FORCE_PROMOTION_UNIQUE_DISCOVERY_FAMILIES_MIN = 6
 STAGE2_GATE_FORMAL_SUCCESS_MIN = 16
 STAGE2_GATE_UNIQUE_FORMAL_FAMILIES_MIN = 6
 STAGE2_GATE_IMPROVING_GROUPS_REQUIRED = 2
+STAGE2_GATE_MAX_DOMINANT_DESCRIPTOR_SHARE = 0.50
 STAGE_RECOVERY_DOMINANT_SHARE_THRESHOLD = 0.55
 STAGE_RECOVERY_NEW_DISCOVERY_FAMILIES_MAX = 1
 STAGE_RECOVERY_RELEASE_GENERATIONS = 2000
 STAGE_RECOVERY_RELEASE_DISCOVERY_FAMILIES = 4
 MAX_STAGE_SAMPLE_HISTORY = 24000
 MAX_STAGE_GROUP_HISTORY = 512
+TRAINING_CONTEXT_WINDOW = 50
+TRAINING_CONTEXT_MIN_POINTS = 8
 STATIC_STAGE_REWARD_TARGET_METRIC = "stage1_static_score"
 FORMAL_STAGE_REWARD_TARGET_METRIC = "frozen_test_acc"
 STAGE1_EXECUTABLE_BONUS = 0.04
@@ -201,6 +208,27 @@ STAGE1_BATCH_REPEAT_STEP_PENALTY = -0.08
 STAGE1_BATCH_REPEAT_MAX_PENALTY = -0.40
 STAGE1_DOMINANT_FAMILY_PENALTY = -0.60
 STAGE1_PLAIN_PARALLEL_PENALTY = -0.70
+STAGE1_DESCRIPTOR_BATCH_UNIQUE_BONUS = 0.12
+STAGE1_GRAPH_BATCH_UNIQUE_BONUS = 0.05
+STAGE1_DESCRIPTOR_ARCHIVE_NOVEL_BONUS = 0.03
+STAGE1_DESCRIPTOR_BATCH_REPEAT_STEP_PENALTY = -0.10
+STAGE1_DESCRIPTOR_BATCH_REPEAT_MAX_PENALTY = -0.30
+STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_STEP_PENALTY = -0.03
+STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_MAX_PENALTY = -0.18
+STAGE1_GRAPH_BATCH_REPEAT_STEP_PENALTY = -0.12
+STAGE1_GRAPH_BATCH_REPEAT_MAX_PENALTY = -0.36
+STAGE23_DESCRIPTOR_BATCH_UNIQUE_BONUS = 0.03
+STAGE23_DESCRIPTOR_ARCHIVE_NOVEL_BONUS = 0.02
+STAGE23_NON_DOMINANT_DESCRIPTOR_BONUS = 0.06
+STAGE23_DESCRIPTOR_BATCH_REPEAT_STEP_PENALTY = -0.05
+STAGE23_DESCRIPTOR_BATCH_REPEAT_MAX_PENALTY = -0.20
+STAGE23_DESCRIPTOR_ARCHIVE_REPEAT_STEP_PENALTY = -0.025
+STAGE23_DESCRIPTOR_ARCHIVE_REPEAT_MAX_PENALTY = -0.14
+STAGE23_DOMINANT_DESCRIPTOR_SOFT_SHARE = 0.45
+STAGE23_DOMINANT_DESCRIPTOR_STRONG_SHARE = 0.60
+STAGE23_DOMINANT_DESCRIPTOR_REPEAT_PENALTY = -0.12
+STAGE23_DOMINANT_DESCRIPTOR_REPEAT_STRONG_PENALTY = -0.20
+STAGE23_STRUCTURE_ARCHIVE_RARITY_CAP = 0.03
 STAGE2_DENSE_SCALE = 0.75
 STAGE2_PREV_GROUP_SCALE = 0.70
 STAGE2_BEST_GROUP_SCALE = 0.70
@@ -211,6 +239,7 @@ STAGE2_REPEAT_FAMILY_SCALE = 1.10
 STAGE2_PLAIN_FUSE_SCALE = 1.10
 STAGE2_NO_PROGRESS_SCALE = 0.50
 STAGE2_NON_IMPROVING_CAP = 0.10
+STAGE2_DESCRIPTOR_NON_IMPROVING_CAP = 0.03
 STAGE3_DENSE_SCALE = 1.20
 STAGE3_PREV_GROUP_SCALE = 1.10
 STAGE3_BEST_GROUP_SCALE = 1.10
@@ -221,6 +250,7 @@ STAGE3_REPEAT_FAMILY_SCALE = 1.00
 STAGE3_PLAIN_FUSE_SCALE = 1.00
 STAGE3_NO_PROGRESS_SCALE = 1.15
 STAGE3_NON_IMPROVING_CAP = NON_IMPROVING_REWARD_CAP
+STAGE3_DESCRIPTOR_NON_IMPROVING_CAP = 0.00
 RL_STAGE_KL_COEF = 0.005
 reward_batch_index = 0
 current_group_id = 0
@@ -244,6 +274,8 @@ best_closed_group_id: Optional[int] = None
 best_reward_target_by_goal: Dict[str, float] = {}
 dominant_family_hash: Optional[str] = None
 dominant_family_share: float = 0.0
+dominant_descriptor_key: Optional[str] = None
+dominant_descriptor_share: float = 0.0
 prev_group_feedback: List["GroupFeedbackSummary"] = []
 best_group_feedback: List["GroupFeedbackSummary"] = []
 current_group_top_feedback: List["GroupFeedbackSummary"] = []
@@ -277,6 +309,12 @@ class NullCodeLogger:
 code_logger: Any = NullCodeLogger()
 active_rl_model: Any = None
 active_rl_tokenizer: Any = None
+_registered_signal_handlers: Dict[int, Any] = {}
+_signal_checkpoint_in_progress = False
+
+
+def clear_extraction_meta_cache() -> None:
+    return
 
 SHALLOW_COLLAPSE_FAMILIES = {
     "ParallelTriple_Shallow",
@@ -371,9 +409,12 @@ def capture_reward_runtime_state() -> Dict[str, Any]:
         },
         "dominant_family_hash": dominant_family_hash,
         "dominant_family_share": dominant_family_share,
+        "dominant_descriptor_key": dominant_descriptor_key,
+        "dominant_descriptor_share": dominant_descriptor_share,
         "graph_archive_counts": _counter_payload(graph_archive_counts),
         "family_archive_counts": _counter_payload(family_archive_counts),
         "family_hash_archive_counts": _counter_payload(family_hash_archive_counts),
+        "descriptor_archive_counts": _counter_payload(descriptor_archive_counts),
         "family_metric_best": {
             str(key): float(value)
             for key, value in family_metric_best.items()
@@ -441,6 +482,8 @@ def restore_reward_runtime_state(state: Optional[Dict[str, Any]]) -> None:
         "best_closed_group_id": None,
         "dominant_family_hash": None,
         "dominant_family_share": 0.0,
+        "dominant_descriptor_key": None,
+        "dominant_descriptor_share": 0.0,
         "current_stage_name": STAGE1_STRUCTURE_EXPLORE,
         "recovery_active": False,
         "recovery_start_generation_total": 0,
@@ -452,6 +495,7 @@ def restore_reward_runtime_state(state: Optional[Dict[str, Any]]) -> None:
     _restore_counter(graph_archive_counts, state.get("graph_archive_counts"))
     _restore_counter(family_archive_counts, state.get("family_archive_counts"))
     _restore_counter(family_hash_archive_counts, state.get("family_hash_archive_counts"))
+    _restore_counter(descriptor_archive_counts, state.get("descriptor_archive_counts"))
     family_metric_best.clear()
     family_metric_best.update(
         {
@@ -655,11 +699,22 @@ def env_int(name: str, default: int) -> int:
     return int(value)
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return bool(default)
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def env_float(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None or value == "":
         return default
     return float(value)
+
+
+def _stage1_only_enabled() -> bool:
+    return env_flag("NNGPT_RL_STAGE1_ONLY", False)
 
 
 def resolve_generation_plan(
@@ -1003,6 +1058,15 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
         json.dump(payload, handle, indent=2, ensure_ascii=False)
 
 
+def _reward_runtime_hooks() -> TrainingRuntime.RuntimeStateHooks:
+    # Reward bookkeeping is pipeline-owned, but the save/restore contract is shared.
+    return TrainingRuntime.RuntimeStateHooks(
+        capture=capture_reward_runtime_state,
+        restore=restore_reward_runtime_state,
+        reset=reset_reward_runtime_state,
+    )
+
+
 def _current_group_top_feedback_payload() -> List[Dict[str, Any]]:
     return [asdict(item) for item in current_group_top_feedback[:FEEDBACK_SUMMARY_LIMIT]]
 
@@ -1084,6 +1148,7 @@ def _reset_current_group_feedback_state() -> None:
 
 
 def get_prompt_feedback_state() -> Dict[str, Any]:
+    training_context = summarize_stage_training_context(current_stage_name)
     return {
         "prev_closed_group_mean_reward_target_acc": prev_closed_group_mean_reward_target_acc,
         "best_closed_group_mean_reward_target_acc": best_closed_group_mean_reward_target_acc,
@@ -1096,6 +1161,7 @@ def get_prompt_feedback_state() -> Dict[str, Any]:
         "dominant_family_share": dominant_family_share,
         "prev_group_feedback": _feedback_summary_payload(prev_group_feedback),
         "best_group_feedback": _feedback_summary_payload(best_group_feedback),
+        "training_context": training_context,
     }
 
 
@@ -1103,6 +1169,12 @@ def _format_optional_metric(value: Optional[float]) -> str:
     if value is None:
         return "n/a"
     return f"{float(value):.4f}"
+
+
+def _format_optional_signed_metric(value: Optional[float]) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):+.4f}"
 
 
 def _format_target_metric(base_value: Optional[float], delta: float) -> str:
@@ -1114,6 +1186,8 @@ def _format_target_metric(base_value: Optional[float], delta: float) -> str:
 def render_prompt_feedback_text(*, feedback_char_budget: int = 1200) -> str:
     state = get_prompt_feedback_state()
     current_metric = _stage_reward_target_metric(current_stage_name)
+    training_context = dict(state.get("training_context") or {})
+    context_guidance = _training_context_guidance(training_context)
     header_lines = [
         f"- Current Stage: {current_stage_name}",
         f"- Reward Target Metric: {current_metric}",
@@ -1133,6 +1207,22 @@ def render_prompt_feedback_text(*, feedback_char_budget: int = 1200) -> str:
             f"{state['dominant_family_hash'] or 'n/a'} "
             f"(share={float(state['dominant_family_share'] or 0.0):.2%})"
         ),
+        (
+            "- Current Training Context: "
+            f"last50 best_loss={_format_optional_metric(training_context.get('recent_best_loss'))}, "
+            f"delta_best={_format_optional_signed_metric(training_context.get('delta_best_loss'))}; "
+            f"last50 avg_loss={_format_optional_metric(training_context.get('recent_avg_loss'))}, "
+            f"delta_avg={_format_optional_signed_metric(training_context.get('delta_avg_loss'))}"
+        ),
+        (
+            "- Training Trend: "
+            f"slope={_format_optional_signed_metric(training_context.get('loss_slope_recent'))}/epoch, "
+            f"variance={_format_optional_metric(training_context.get('loss_variance_recent'))}, "
+            f"since_best={training_context.get('epochs_since_last_improvement', 'n/a')}, "
+            f"plateau={float(training_context.get('plateau_score') or 0.0):.2f}, "
+            f"oscillation={float(training_context.get('oscillation_score') or 0.0):.2f}"
+        ),
+        f"- Training Guidance: {context_guidance}",
     ]
 
     prev_lines = [
@@ -1198,6 +1288,8 @@ def reset_reward_runtime_state() -> None:
     global best_closed_group_id
     global dominant_family_hash
     global dominant_family_share
+    global dominant_descriptor_key
+    global dominant_descriptor_share
     global current_stage_name
     global recovery_active
     global recovery_start_generation_total
@@ -1206,6 +1298,7 @@ def reset_reward_runtime_state() -> None:
     graph_archive_counts.clear()
     family_archive_counts.clear()
     family_hash_archive_counts.clear()
+    descriptor_archive_counts.clear()
     family_metric_best.clear()
     motif_name_counts.clear()
     saved_graph_counts.clear()
@@ -1245,6 +1338,8 @@ def reset_reward_runtime_state() -> None:
     best_reward_target_by_goal.clear()
     dominant_family_hash = None
     dominant_family_share = 0.0
+    dominant_descriptor_key = None
+    dominant_descriptor_share = 0.0
     current_stage_name = STAGE1_STRUCTURE_EXPLORE
     recovery_active = False
     recovery_start_generation_total = 0
@@ -1268,6 +1363,8 @@ def current_reward_group_context() -> Dict[str, Any]:
         "best_closed_group_id": best_closed_group_id,
         "dominant_family_hash": dominant_family_hash,
         "dominant_family_share": dominant_family_share,
+        "dominant_descriptor_key": dominant_descriptor_key,
+        "dominant_descriptor_share": dominant_descriptor_share,
         "current_stage_name": current_stage_name,
         "current_stage_index": RL_STAGE_TO_INDEX.get(current_stage_name, 0),
         "generation_total": _current_generation_total(),
@@ -1772,6 +1869,7 @@ def _save_stage_checkpoint(
     stage_name: Optional[str] = None,
     group_progress_payload: Optional[Dict[str, Any]] = None,
     reason: Optional[str] = None,
+    save_plot_snapshot: bool = True,
 ) -> Optional[Path]:
     if not is_main_process():
         return None
@@ -1780,6 +1878,8 @@ def _save_stage_checkpoint(
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     adapter_dir = checkpoint_dir / "adapter"
     tokenizer_dir = checkpoint_dir / "tokenizer"
+    runtime_state_path = checkpoint_dir / "runtime_state.json"
+    runtime_manifest_path = checkpoint_dir / "runtime_manifest.json"
     reward_state_path = checkpoint_dir / "reward_state.json"
     manifest_path = checkpoint_dir / "stage_manifest.json"
     snapshot_path = checkpoint_dir / "group_progress_snapshot.json"
@@ -1792,8 +1892,6 @@ def _save_stage_checkpoint(
         tokenizer_dir.mkdir(parents=True, exist_ok=True)
         active_rl_tokenizer.save_pretrained(str(tokenizer_dir))
 
-    reward_state = capture_reward_runtime_state()
-    _write_json(reward_state_path, reward_state)
     _write_json(snapshot_path, _stage_group_snapshot_payload(group_progress_payload))
     manifest = {
         "event": str(event),
@@ -1811,28 +1909,67 @@ def _save_stage_checkpoint(
         "checkpoint_dir": str(checkpoint_dir),
         "adapter_dir": str(adapter_dir),
         "tokenizer_dir": str(tokenizer_dir),
+        "runtime_state_path": str(runtime_state_path),
+        "runtime_manifest_path": str(runtime_manifest_path),
         "reward_state_path": str(reward_state_path),
+        "stage_manifest_path": str(manifest_path),
         "plot_snapshot_path": str(plot_path),
     }
-    _write_json(manifest_path, manifest)
-    _save_stage_plot_snapshot(plot_path)
+    # Dual-write the new shared filenames and the legacy aliases for older checkpoints.
+    TrainingRuntime.save_runtime_checkpoint(
+        checkpoint_dir,
+        hooks=_reward_runtime_hooks(),
+        manifest=manifest,
+        state_aliases=("reward_state.json",),
+        manifest_aliases=("stage_manifest.json",),
+    )
+    if save_plot_snapshot:
+        _save_stage_plot_snapshot(plot_path)
     return checkpoint_dir
 
 
-def _stage1_gate_ready() -> bool:
-    if bool(recovery_active):
-        generations_since_recovery = _current_generation_total() - int(recovery_start_generation_total)
-        new_families_since_recovery = max(
-            0,
-            len(discovery_family_hashes_seen) - int(recovery_start_discovery_family_count),
+def _handle_checkpoint_signal(signum: int, _frame) -> None:
+    global _signal_checkpoint_in_progress
+
+    if _signal_checkpoint_in_progress:
+        raise SystemExit(128 + int(signum))
+
+    _signal_checkpoint_in_progress = True
+    signal_name = signal.Signals(signum).name.lower()
+    try:
+        _save_stage_checkpoint(
+            "signal",
+            stage_name=current_stage_name,
+            reason=f"signal_{signal_name}",
+            save_plot_snapshot=False,
         )
-        if generations_since_recovery < STAGE_RECOVERY_RELEASE_GENERATIONS and new_families_since_recovery < STAGE_RECOVERY_RELEASE_DISCOVERY_FAMILIES:
-            return False
+        try:
+            code_logger.save_log()
+        except Exception as exc:
+            code_logger.log_to_file(f"[Signal Save] save_log failed: {type(exc).__name__}: {exc}")
+    finally:
+        signal.signal(signum, signal.SIG_DFL)
+        _signal_checkpoint_in_progress = False
+
+    raise SystemExit(128 + int(signum))
+
+
+def register_stage_checkpoint_signal_handlers() -> None:
+    if not is_main_process():
+        return
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        if signum in _registered_signal_handlers:
+            continue
+        _registered_signal_handlers[signum] = signal.getsignal(signum)
+        signal.signal(signum, _handle_checkpoint_signal)
+
+
+def _stage1_gate_ready() -> bool:
     recent_generations = _recent_stage_generation_window(STAGE1_STRUCTURE_EXPLORE, STAGE1_GATE_WINDOW_GENERATIONS)
     current_entry_group_count = len(_recent_stage_group_window(STAGE1_STRUCTURE_EXPLORE, MAX_STAGE_GROUP_HISTORY))
     if len(recent_generations) < STAGE1_GATE_WINDOW_GENERATIONS:
         return False
-    if current_entry_group_count < STAGE_REFERENCE_MIN_GROUPS[STAGE1_STRUCTURE_EXPLORE]:
+    if current_entry_group_count < STAGE1_PROMOTION_MIN_GROUPS:
         return False
     executable_count = sum(1 for item in recent_generations if bool(item.get("executable_candidate")))
     discovery_rows = [item for item in recent_generations if bool(item.get("discovery_candidate"))]
@@ -1845,13 +1982,11 @@ def _stage1_gate_ready() -> bool:
 
 
 def _stage1_force_promotion_ready() -> Optional[Dict[str, int]]:
-    if bool(recovery_active):
-        return None
     recent_generations = _recent_stage_generation_window(STAGE1_STRUCTURE_EXPLORE, STAGE1_GATE_WINDOW_GENERATIONS)
     current_entry_group_count = len(_recent_stage_group_window(STAGE1_STRUCTURE_EXPLORE, MAX_STAGE_GROUP_HISTORY))
     if len(recent_generations) < STAGE1_GATE_WINDOW_GENERATIONS:
         return None
-    if current_entry_group_count < STAGE1_FORCE_PROMOTION_MIN_GROUPS:
+    if current_entry_group_count < STAGE1_PROMOTION_MIN_GROUPS:
         return None
     recent_executable_count = sum(1 for item in recent_generations if bool(item.get("executable_candidate")))
     discovery_rows = [item for item in recent_generations if bool(item.get("discovery_candidate"))]
@@ -1884,6 +2019,7 @@ def _stage2_gate_ready() -> bool:
     formal_rows = [item for item in recent_generations if bool(item.get("formal_success_candidate"))]
     unique_formal_families = len(_family_hash_set(formal_rows, key="family_hash"))
     mean_dominant_share = _mean_dominant_share(recent_groups)
+    mean_dominant_descriptor_share = _mean_dominant_descriptor_share(recent_groups)
     improving_groups = _count_group_improvements(recent_improvement_groups)
     return bool(
         len(formal_rows) >= STAGE2_GATE_FORMAL_SUCCESS_MIN
@@ -1891,6 +2027,8 @@ def _stage2_gate_ready() -> bool:
         and improving_groups >= STAGE2_GATE_IMPROVING_GROUPS_REQUIRED
         and mean_dominant_share is not None
         and mean_dominant_share <= 0.45
+        and mean_dominant_descriptor_share is not None
+        and mean_dominant_descriptor_share <= STAGE2_GATE_MAX_DOMINANT_DESCRIPTOR_SHARE
     )
 
 
@@ -1930,6 +2068,7 @@ def _stage_gate_snapshot() -> Dict[str, Any]:
         "recent_formal_success_count": len(formal_rows),
         "recent_unique_formal_families": len(_family_hash_set(formal_rows, key="family_hash")),
         "recent_mean_dominant_family_share": _mean_dominant_share(recent_groups),
+        "recent_mean_dominant_descriptor_share": _mean_dominant_descriptor_share(recent_groups),
         "recent_improving_groups": _count_group_improvements(_recent_stage_group_window(stage_name, 4)),
         "recovery_active": bool(recovery_active),
     }
@@ -2007,30 +2146,11 @@ def _evaluate_stage_transitions(group_progress_payload: Dict[str, Any]) -> None:
     global recovery_start_discovery_family_count
 
     stage_name = str(group_progress_payload.get("stage_name") or current_stage_name)
-    if recovery_active and stage_name == STAGE1_STRUCTURE_EXPLORE:
-        generations_since_recovery = _current_generation_total() - int(recovery_start_generation_total)
-        new_families_since_recovery = max(
-            0,
-            len(discovery_family_hashes_seen) - int(recovery_start_discovery_family_count),
-        )
-        if generations_since_recovery >= STAGE_RECOVERY_RELEASE_GENERATIONS or new_families_since_recovery >= STAGE_RECOVERY_RELEASE_DISCOVERY_FAMILIES:
-            recovery_active = False
-            recovery_start_generation_total = 0
-            recovery_start_discovery_family_count = 0
-            _append_stage_event(
-                {
-                    "event": "recovery_released",
-                    "reason": f"generations_since_recovery={generations_since_recovery}, new_families_since_recovery={new_families_since_recovery}",
-                }
-            )
-
-    if _stage_recovery_needed(stage_name):
-        _transition_to_stage(
-            STAGE1_STRUCTURE_EXPLORE,
-            event="recovery_entered",
-            reason="collapse_recovery_triggered",
-            group_progress_payload=group_progress_payload,
-        )
+    if recovery_active:
+        recovery_active = False
+        recovery_start_generation_total = 0
+        recovery_start_discovery_family_count = 0
+    if _stage1_only_enabled() and stage_name == STAGE1_STRUCTURE_EXPLORE:
         return
 
     if stage_name == STAGE1_STRUCTURE_EXPLORE:
@@ -2091,6 +2211,8 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
     global best_closed_group_id
     global dominant_family_hash
     global dominant_family_share
+    global dominant_descriptor_key
+    global dominant_descriptor_share
     global stage_closed_group_counts
 
     reward_batch_index += 1
@@ -2163,6 +2285,13 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
     else:
         dominant_family_hash = None
         dominant_family_share = 0.0
+    descriptor_total = sum(descriptor_archive_counts.values())
+    if descriptor_total > 0:
+        dominant_descriptor_key, dominant_descriptor_count = descriptor_archive_counts.most_common(1)[0]
+        dominant_descriptor_share = dominant_descriptor_count / descriptor_total
+    else:
+        dominant_descriptor_key = None
+        dominant_descriptor_share = 0.0
 
     if stage1_feedback_ready:
         prev_group_feedback[:] = list(current_group_top_feedback[:FEEDBACK_SUMMARY_LIMIT])
@@ -2195,6 +2324,9 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
         "improvement_vs_best": None if closed_mean_reward_target is None or previous_best_reward_target_mean is None else float(closed_mean_reward_target - previous_best_reward_target_mean),
         "dominant_family_hash": dominant_family_hash,
         "dominant_family_share": dominant_family_share,
+        "dominant_descriptor_key": dominant_descriptor_key,
+        "dominant_descriptor_share": dominant_descriptor_share,
+        "unique_descriptor_count": len(descriptor_archive_counts),
         "trainable_samples": current_group_reward_target_count,
         "main_process_rss_gib": _read_process_rss_gib(),
         "worker_rss_gib": worker_info.get("total_rss_gib", worker_info.get("rss_gib")) if worker_info else None,
@@ -2252,6 +2384,13 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
     current_group_unfrozen_test_acc_sum = 0.0
     current_group_unfrozen_test_acc_count = 0
     _reset_current_group_feedback_state()
+    _save_stage_checkpoint(
+        "group_closed",
+        stage_name=stage_name,
+        group_progress_payload=group_progress_payload,
+        reason="closed_group",
+        save_plot_snapshot=False,
+    )
     _maybe_update_stage_best_checkpoint(group_progress_payload)
     _evaluate_stage_transitions(group_progress_payload)
     return group_progress_payload
@@ -2404,6 +2543,17 @@ def _mean_dominant_share(items: List[Dict[str, Any]]) -> Optional[float]:
     return float(sum(shares) / len(shares))
 
 
+def _mean_dominant_descriptor_share(items: List[Dict[str, Any]]) -> Optional[float]:
+    shares = [
+        float(item.get("dominant_descriptor_share"))
+        for item in items
+        if item.get("dominant_descriptor_share") is not None
+    ]
+    if not shares:
+        return None
+    return float(sum(shares) / len(shares))
+
+
 def _count_group_improvements(items: List[Dict[str, Any]]) -> int:
     count = 0
     for item in items:
@@ -2413,6 +2563,205 @@ def _count_group_improvements(items: List[Dict[str, Any]]) -> int:
         if float(improvement_vs_prev) >= GROUP_IMPROVEMENT_DELTA:
             count += 1
     return count
+
+
+def _training_context_metric_from_event(item: Dict[str, Any]) -> Tuple[Optional[str], Optional[float]]:
+    best_epoch_loss = _optional_float(item.get("best_epoch_loss"))
+    if best_epoch_loss is not None:
+        return "best_epoch_loss", best_epoch_loss
+    loss_end = _optional_float(item.get("loss_end"))
+    if loss_end is not None:
+        return "loss_end", loss_end
+    metric_name = str(item.get("training_context_metric_name") or "").strip()
+    metric_value = _optional_float(item.get("training_context_metric_value"))
+    if metric_name and metric_value is not None:
+        return metric_name, metric_value
+    return None, None
+
+
+def _recent_stage_trainable_metric_window(stage_name: str, max_items: int) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    for item in _recent_stage_generation_window(stage_name, max_items):
+        metric_name, metric_value = _training_context_metric_from_event(item)
+        if metric_value is None:
+            continue
+        if not bool(item.get("backward_ok") or item.get("trained_step_ok") or item.get("loss_drop_ok")):
+            continue
+        epochs_completed = max(1, int(item.get("epochs_completed", 0) or 1))
+        records.append(
+            {
+                "generation_total": int(item.get("generation_total", 0) or 0),
+                "metric_name": metric_name or "best_epoch_loss",
+                "metric_value": float(metric_value),
+                "epochs_completed": epochs_completed,
+            }
+        )
+    return records
+
+
+def _series_mean(values: List[float]) -> Optional[float]:
+    if not values:
+        return None
+    return float(sum(values) / len(values))
+
+
+def _series_variance(values: List[float]) -> Optional[float]:
+    if not values:
+        return None
+    mean_value = _series_mean(values)
+    if mean_value is None:
+        return None
+    return float(sum((float(value) - mean_value) ** 2 for value in values) / len(values))
+
+
+def _series_slope(values: List[float]) -> Optional[float]:
+    if len(values) < 2:
+        return None
+    n = len(values)
+    x_mean = float(n - 1) / 2.0
+    y_mean = _series_mean(values)
+    if y_mean is None:
+        return None
+    numerator = 0.0
+    denominator = 0.0
+    for index, value in enumerate(values):
+        x_delta = float(index) - x_mean
+        numerator += x_delta * (float(value) - y_mean)
+        denominator += x_delta * x_delta
+    if denominator <= 0.0:
+        return None
+    return float(numerator / denominator)
+
+
+def _epochs_since_last_best(records: List[Dict[str, Any]]) -> Optional[int]:
+    if not records:
+        return None
+    best_value = None
+    total_epochs = 0
+    last_best_epoch = 0
+    for item in records:
+        epochs_completed = max(1, int(item.get("epochs_completed", 0) or 1))
+        total_epochs += epochs_completed
+        metric_value = float(item["metric_value"])
+        if best_value is None or metric_value < best_value - 1e-8:
+            best_value = metric_value
+            last_best_epoch = total_epochs
+    return max(0, total_epochs - last_best_epoch)
+
+
+def _history_exploration_pressure_from_summary(summary: Dict[str, Any]) -> float:
+    if not summary.get("has_recent_window"):
+        return 0.0
+    pressure = 0.0
+    delta_avg_loss = _optional_float(summary.get("delta_avg_loss"))
+    if delta_avg_loss is not None:
+        if delta_avg_loss >= 0.0:
+            pressure += 0.35
+        elif delta_avg_loss >= -0.01:
+            pressure += 0.20
+    loss_slope_recent = _optional_float(summary.get("loss_slope_recent"))
+    if loss_slope_recent is not None:
+        if loss_slope_recent >= 0.0:
+            pressure += 0.25
+        elif loss_slope_recent >= -5e-4:
+            pressure += 0.12
+    pressure += 0.30 * float(summary.get("plateau_score") or 0.0)
+    pressure += 0.18 * float(summary.get("oscillation_score") or 0.0)
+    epochs_since_last_improvement = summary.get("epochs_since_last_improvement")
+    recent_window_epochs = max(1, int(summary.get("recent_window_epochs", 0) or 1))
+    if epochs_since_last_improvement is not None:
+        pressure += 0.25 * min(1.0, float(epochs_since_last_improvement) / float(recent_window_epochs))
+    return _clip(pressure, 0.0, 1.0)
+
+
+def summarize_stage_training_context(
+    stage_name: str,
+    *,
+    window_size: int = TRAINING_CONTEXT_WINDOW,
+) -> Dict[str, Any]:
+    effective_window = max(1, int(window_size))
+    records = _recent_stage_trainable_metric_window(stage_name, max_items=max(effective_window * 4, effective_window))
+    recent_records = records[-effective_window:]
+    prev_records = records[-(effective_window * 2):-effective_window] if len(records) > effective_window else []
+    recent_values = [float(item["metric_value"]) for item in recent_records]
+    prev_values = [float(item["metric_value"]) for item in prev_records]
+    recent_window_epochs = sum(max(1, int(item.get("epochs_completed", 0) or 1)) for item in recent_records)
+    prev_window_epochs = sum(max(1, int(item.get("epochs_completed", 0) or 1)) for item in prev_records)
+    recent_best_loss = min(recent_values) if recent_values else None
+    prev_best_loss = min(prev_values) if prev_values else None
+    recent_avg_loss = _series_mean(recent_values)
+    prev_avg_loss = _series_mean(prev_values)
+    delta_best_loss = (
+        float(recent_best_loss - prev_best_loss)
+        if recent_best_loss is not None and prev_best_loss is not None
+        else None
+    )
+    delta_avg_loss = (
+        float(recent_avg_loss - prev_avg_loss)
+        if recent_avg_loss is not None and prev_avg_loss is not None
+        else None
+    )
+    improvement_rate = (
+        float((prev_avg_loss - recent_avg_loss) / float(max(1, recent_window_epochs)))
+        if recent_avg_loss is not None and prev_avg_loss is not None
+        else None
+    )
+    loss_slope_recent = _series_slope(recent_values)
+    loss_variance_recent = _series_variance(recent_values)
+    epochs_since_last_improvement = _epochs_since_last_best(records)
+    recent_range = (max(recent_values) - min(recent_values)) if len(recent_values) >= 2 else 0.0
+    recent_scale = max(1e-6, abs(recent_avg_loss if recent_avg_loss is not None else (recent_best_loss or 1.0)))
+    normalized_slope = 0.0
+    if loss_slope_recent is not None:
+        normalized_slope = min(1.0, abs(float(loss_slope_recent)) * float(max(1, len(recent_values))) / recent_scale)
+    normalized_range = min(1.0, float(recent_range) / recent_scale)
+    plateau_score = _clip(1.0 - min(1.0, 0.65 * normalized_slope + 0.35 * normalized_range), 0.0, 1.0)
+    diffs = [recent_values[index + 1] - recent_values[index] for index in range(max(0, len(recent_values) - 1))]
+    nontrivial_diffs = [float(value) for value in diffs if abs(float(value)) > 1e-8]
+    diff_signs = [1 if value > 0.0 else -1 for value in nontrivial_diffs]
+    oscillation_score = 0.0
+    if len(diff_signs) >= 2:
+        sign_changes = sum(1 for left, right in zip(diff_signs, diff_signs[1:]) if left != right)
+        oscillation_score = float(sign_changes) / float(len(diff_signs) - 1)
+    monotonic_improving = bool(nontrivial_diffs) and all(value < 0.0 for value in nontrivial_diffs)
+    metric_name = recent_records[-1]["metric_name"] if recent_records else "best_epoch_loss"
+    summary = {
+        "stage_name": str(stage_name),
+        "metric_name": metric_name,
+        "sample_count": len(records),
+        "recent_window_size": len(recent_records),
+        "compare_window_size": len(prev_records),
+        "recent_window_epochs": recent_window_epochs,
+        "compare_window_epochs": prev_window_epochs,
+        "has_recent_window": len(recent_records) >= max(1, TRAINING_CONTEXT_MIN_POINTS),
+        "has_compare_window": len(prev_records) >= max(1, TRAINING_CONTEXT_MIN_POINTS),
+        "recent_best_loss": recent_best_loss,
+        "prev_best_loss": prev_best_loss,
+        "delta_best_loss": delta_best_loss,
+        "recent_avg_loss": recent_avg_loss,
+        "prev_avg_loss": prev_avg_loss,
+        "delta_avg_loss": delta_avg_loss,
+        "improvement_rate": improvement_rate,
+        "loss_slope_recent": loss_slope_recent,
+        "loss_variance_recent": loss_variance_recent,
+        "epochs_since_last_improvement": epochs_since_last_improvement,
+        "plateau_score": plateau_score,
+        "oscillation_score": oscillation_score,
+        "monotonic_improving": monotonic_improving,
+    }
+    summary["exploration_pressure"] = _history_exploration_pressure_from_summary(summary)
+    return summary
+
+
+def _training_context_guidance(summary: Dict[str, Any]) -> str:
+    if not summary.get("has_recent_window"):
+        return "no train-loss window yet"
+    pressure = float(summary.get("exploration_pressure") or 0.0)
+    if pressure >= 0.60:
+        return "loss has plateaued or oscillated; favor structurally new candidates and avoid dominant templates"
+    if bool(summary.get("monotonic_improving")) and pressure <= 0.25:
+        return "loss is still improving; keep local mutations and avoid collapsing to one family"
+    return "improvement is slowing; bias toward descriptor and family novelty over shallow repeats"
 
 
 def _stage_reward_target_metric(stage_name: str) -> str:
@@ -2702,6 +3051,134 @@ def _compute_warmup_dense_reward(test_acc: Optional[float]) -> Optional[float]:
     return max(0.05, min(0.30, 0.08 + 0.55 * float(test_acc)))
 
 
+def _is_minimal_backbone_classifier_template(init_code: str) -> bool:
+    significant_lines = []
+    for raw_line in textwrap.dedent(init_code or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(
+            (
+                "def __init__",
+                "super().__init__",
+                "self.device",
+                "self.use_amp",
+                "self._input_spec",
+                "self.pattern",
+                "self.infer_dimensions",
+            )
+        ):
+            continue
+        significant_lines.append(line)
+    assignment_lines = [line for line in significant_lines if line.startswith("self.")]
+    if len(assignment_lines) > 3:
+        return False
+    has_backbone_a = any("self.backbone_a" in line for line in assignment_lines)
+    has_backbone_b = any("self.backbone_b" in line for line in assignment_lines)
+    has_classifier = any("self.classifier" in line for line in assignment_lines)
+    if not (has_backbone_a and has_backbone_b and has_classifier):
+        return False
+    non_core_assignments = [
+        line
+        for line in assignment_lines
+        if all(token not in line for token in ("self.backbone_a", "self.backbone_b", "self.classifier"))
+    ]
+    return not non_core_assignments
+
+
+def _stage1_validity_scale(res: Dict[str, Any]) -> float:
+    if bool(res.get("loss_drop_ok")):
+        return 1.0
+    if bool(res.get("backward_ok")):
+        return 0.70
+    if bool(res.get("forward_shape_ok")):
+        return 0.35
+    return 0.0
+
+
+def _stage1_validity_reward(res: Dict[str, Any], graph_info) -> float:
+    if not graph_info or not graph_info.parse_ok:
+        return -0.35
+    if not res.get("built_ok"):
+        build_partial = float(res.get("r_build_partial", 0.0) or 0.0)
+        return min(-0.45, -0.70 + build_partial)
+    if not res.get("forward_ok"):
+        return -0.28
+    if not res.get("forward_shape_ok"):
+        return -0.16
+    if not res.get("backward_ok"):
+        return -0.06
+    if not res.get("loss_drop_ok"):
+        loss_drop = _optional_float(res.get("loss_drop"))
+        if loss_drop is None:
+            return -0.01
+        return _clip(-0.02 + 0.35 * float(loss_drop), -0.04, 0.03)
+    return STAGE1_EXECUTABLE_BONUS
+
+
+def _template_penalty(
+    *,
+    stage_name: str,
+    shallow_one_shot: bool,
+    minimal_init_template: bool,
+) -> float:
+    penalty = 0.0
+    if shallow_one_shot:
+        penalty += -0.12 if stage_name == STAGE1_STRUCTURE_EXPLORE else -0.05
+    if minimal_init_template:
+        penalty += -0.16 if stage_name == STAGE1_STRUCTURE_EXPLORE else -0.08
+    return penalty
+
+
+def _history_context_reward(
+    *,
+    stage_name: str,
+    training_context: Dict[str, Any],
+    executable_candidate: bool,
+    formal_success_candidate: bool,
+    discovery_candidate: bool,
+    novel_vs_trainset_family: bool,
+    novel_vs_trainset_graph: bool,
+    dominant_family_repeat: bool,
+    dominant_descriptor_repeat: bool,
+    shallow_one_shot: bool,
+    plain_parallel_repeat: bool,
+    minimal_init_template: bool,
+    batch_same_descriptor_count: int,
+    validity_scale: float = 1.0,
+) -> float:
+    if not training_context.get("has_recent_window"):
+        return 0.0
+    pressure = float(training_context.get("exploration_pressure") or 0.0)
+    novelty_candidate = bool(
+        discovery_candidate
+        or novel_vs_trainset_family
+        or novel_vs_trainset_graph
+        or batch_same_descriptor_count <= 1
+    )
+    bad_template = bool(shallow_one_shot or plain_parallel_repeat or minimal_init_template)
+    reward = 0.0
+    if stage_name == STAGE1_STRUCTURE_EXPLORE:
+        if executable_candidate and novelty_candidate:
+            reward += 0.08 * pressure * max(0.35, float(validity_scale))
+        elif executable_candidate:
+            reward -= 0.04 * pressure
+        if dominant_family_repeat:
+            reward -= 0.06 * pressure
+        if bad_template:
+            reward -= 0.08 * pressure
+        return _clip(reward, -0.16, 0.10)
+    if formal_success_candidate and novelty_candidate:
+        reward += 0.04 * pressure
+    if dominant_family_repeat or dominant_descriptor_repeat:
+        reward -= 0.05 * pressure
+    if bad_template:
+        reward -= 0.04 * pressure
+    if formal_success_candidate and bool(training_context.get("monotonic_improving")) and pressure < 0.25:
+        reward += 0.01
+    return _clip(reward, -0.08, 0.05)
+
+
 def _goal_tag_match_stats(graph_info, prompt_goal_tags: Optional[List[str]]) -> Tuple[int, int, float]:
     tags = list(prompt_goal_tags or [])
     if not tags:
@@ -2730,6 +3207,12 @@ def _discovery_failure_result(
         "loss_end": None,
         "loss_drop": None,
         "loss_drop_ok": False,
+        "best_epoch_loss": None,
+        "avg_epoch_loss": None,
+        "epochs_completed": 0,
+        "epoch_loss_series": [],
+        "training_context_metric_name": "best_epoch_loss",
+        "training_context_metric_value": None,
         "test_acc": None,
         "train_acc": None,
         "frozen_train_acc": None,
@@ -2776,9 +3259,12 @@ def _discovery_failure_result(
         "r_generalization": 0.0,
         "r_structure_group": 0.0,
         "r_structure_archive": 0.0,
+        "r_descriptor_diversity": 0.0,
         "r_batch_elite": 0.0,
         "r_repeat_family": 0.0,
         "r_plain_fuse_penalty": 0.0,
+        "r_template_penalty": 0.0,
+        "r_history_context": 0.0,
         "r_no_progress_penalty": 0.0,
         "batch_elite_rank": None,
         "batch_elite_tier": "none",
@@ -2800,9 +3286,12 @@ def _discovery_failure_result(
             "r_generalization": 0.0,
             "r_structure_group": 0.0,
             "r_structure_archive": 0.0,
+            "r_descriptor_diversity": 0.0,
             "r_batch_elite": 0.0,
             "r_repeat_family": 0.0,
             "r_plain_fuse_penalty": 0.0,
+            "r_template_penalty": 0.0,
+            "r_history_context": 0.0,
             "r_no_progress_penalty": 0.0,
             "batch_elite_rank": None,
             "batch_elite_tier": "none",
@@ -2848,28 +3337,37 @@ def _is_executable_candidate(res: Dict[str, Any], graph_info) -> bool:
 def _apply_trainability_clamp(res: Dict[str, Any], reward_value: float, graph_info) -> float:
     parse_ok = bool(graph_info and graph_info.parse_ok)
     if not parse_ok:
-        return min(reward_value, -0.25)
+        return min(reward_value, -0.30)
     if not res.get("built_ok"):
         build_partial = float(res.get("r_build_partial", 0.0))
-        return min(reward_value, -0.8 + build_partial)
+        return min(reward_value, -0.70 + build_partial)
+    if not res.get("forward_ok"):
+        return min(reward_value, -0.30)
     if not res.get("forward_shape_ok"):
-        return min(reward_value, -0.50)
+        return min(reward_value, -0.20)
     if not res.get("backward_ok"):
-        return min(reward_value, -0.10)
+        loss_drop = _optional_float(res.get("loss_drop"))
+        partial_progress = _clip(0.25 * float(loss_drop or 0.0), -0.04, 0.04)
+        return min(reward_value, -0.12 + partial_progress)
     if not res.get("loss_drop_ok"):
-        return min(reward_value, 0.0)
+        loss_drop = _optional_float(res.get("loss_drop"))
+        if loss_drop is None:
+            return min(reward_value, -0.02)
+        return min(reward_value, _clip(-0.02 + 0.20 * float(loss_drop), -0.08, 0.04))
     return reward_value
 
 
 def _apply_executability_clamp(res: Dict[str, Any], reward_value: float, graph_info) -> float:
     parse_ok = bool(graph_info and graph_info.parse_ok)
     if not parse_ok:
-        return min(reward_value, -0.25)
+        return min(reward_value, -0.35)
     if not res.get("built_ok"):
         build_partial = float(res.get("r_build_partial", 0.0))
-        return min(reward_value, -0.8 + build_partial)
+        return min(reward_value, -0.70 + build_partial)
+    if not res.get("forward_ok"):
+        return min(reward_value, -0.28)
     if not res.get("forward_shape_ok"):
-        return min(reward_value, -0.25)
+        return min(reward_value, -0.16)
     return reward_value
 
 
@@ -2886,6 +3384,7 @@ def _stage_reward_profile(stage_name: str) -> Dict[str, float]:
             "plain_fuse_scale": STAGE2_PLAIN_FUSE_SCALE,
             "no_progress_scale": STAGE2_NO_PROGRESS_SCALE,
             "non_improving_cap": STAGE2_NON_IMPROVING_CAP,
+            "descriptor_non_improving_cap": STAGE2_DESCRIPTOR_NON_IMPROVING_CAP,
         }
     return {
         "dense_scale": STAGE3_DENSE_SCALE,
@@ -2898,10 +3397,11 @@ def _stage_reward_profile(stage_name: str) -> Dict[str, float]:
         "plain_fuse_scale": STAGE3_PLAIN_FUSE_SCALE,
         "no_progress_scale": STAGE3_NO_PROGRESS_SCALE,
         "non_improving_cap": STAGE3_NON_IMPROVING_CAP,
+        "descriptor_non_improving_cap": STAGE3_DESCRIPTOR_NON_IMPROVING_CAP,
     }
 
 
-def _archive_rarity_bonus(archive_snapshot_family_freq: int) -> float:
+def _archive_rarity_bonus_stage1(archive_snapshot_family_freq: int) -> float:
     if archive_snapshot_family_freq <= 0:
         return STRUCTURE_ARCHIVE_RARITY_STRONG_BONUS
     if archive_snapshot_family_freq == 1:
@@ -2909,6 +3409,13 @@ def _archive_rarity_bonus(archive_snapshot_family_freq: int) -> float:
     if archive_snapshot_family_freq <= 3:
         return STRUCTURE_ARCHIVE_RARITY_LIGHT_BONUS
     return 0.0
+
+
+def _archive_rarity_bonus_formal(archive_snapshot_family_freq: int) -> float:
+    return min(
+        STAGE23_STRUCTURE_ARCHIVE_RARITY_CAP,
+        STAGE23_STRUCTURE_ARCHIVE_RARITY_CAP / math.sqrt(float(archive_snapshot_family_freq) + 1.0),
+    )
 
 
 def _structure_progress_components(
@@ -2919,6 +3426,7 @@ def _structure_progress_components(
     novel_vs_trainset_family: bool,
     novel_vs_trainset_graph: bool,
     shallow_one_shot: bool,
+    use_formal_archive_bonus: bool = False,
 ) -> Tuple[float, float]:
     if not graph_info or not graph_info.parse_ok:
         return 0.0, 0.0
@@ -2948,7 +3456,8 @@ def _structure_progress_components(
         r_structure_archive += TRAINSET_NOVEL_FAMILY_BONUS
     elif novel_vs_trainset_graph:
         r_structure_archive += TRAINSET_NOVEL_GRAPH_BONUS
-    r_structure_archive += _archive_rarity_bonus(archive_snapshot_family_freq)
+    archive_bonus = _archive_rarity_bonus_formal if use_formal_archive_bonus else _archive_rarity_bonus_stage1
+    r_structure_archive += archive_bonus(archive_snapshot_family_freq)
 
     return _clip(r_structure_group, 0.0, 0.14), _clip(r_structure_archive, 0.0, 0.08)
 
@@ -2966,9 +3475,12 @@ def _recompute_discovery_reward(
         + float(res.get("r_generalization", 0.0) or 0.0)
         + float(res.get("r_structure_group", 0.0) or 0.0)
         + float(res.get("r_structure_archive", 0.0) or 0.0)
+        + float(res.get("r_descriptor_diversity", 0.0) or 0.0)
         + float(res.get("r_batch_elite", 0.0) or 0.0)
         + float(res.get("r_repeat_family", 0.0) or 0.0)
         + float(res.get("r_plain_fuse_penalty", 0.0) or 0.0)
+        + float(res.get("r_template_penalty", 0.0) or 0.0)
+        + float(res.get("r_history_context", 0.0) or 0.0)
         + float(res.get("r_no_progress_penalty", 0.0) or 0.0)
     )
     r_tiebreak = float(res.get("r_goal_match", 0.0) or 0.0)
@@ -3073,6 +3585,12 @@ def _attach_group_context(
             "group_train_acc_improved": False,
             "reward_target_metric": _stage_reward_target_metric(group_context.get("current_stage_name", current_stage_name)),
             "reward_target_value": _result_reward_target_value(res),
+            "best_epoch_loss": None,
+            "avg_epoch_loss": None,
+            "epochs_completed": 0,
+            "epoch_loss_series": [],
+            "training_context_metric_name": "best_epoch_loss",
+            "training_context_metric_value": None,
             "group_baseline_reward_target_acc": group_context["group_baseline_reward_target_acc"],
             "group_reward_target_gain": None,
             "group_reward_target_improved": False,
@@ -3097,9 +3615,12 @@ def _attach_group_context(
             "r_generalization": 0.0,
             "r_structure_group": 0.0,
             "r_structure_archive": 0.0,
+            "r_descriptor_diversity": 0.0,
             "r_batch_elite": 0.0,
             "r_repeat_family": 0.0,
             "r_plain_fuse_penalty": 0.0,
+            "r_template_penalty": 0.0,
+            "r_history_context": 0.0,
             "r_no_progress_penalty": 0.0,
             "batch_elite_rank": None,
             "batch_elite_tier": "none",
@@ -3132,6 +3653,8 @@ def _attach_group_context(
             "r_batch_elite": res.get("r_batch_elite", 0.0),
             "r_repeat_family": res.get("r_repeat_family", 0.0),
             "r_plain_fuse_penalty": res.get("r_plain_fuse_penalty", 0.0),
+            "r_template_penalty": res.get("r_template_penalty", 0.0),
+            "r_history_context": res.get("r_history_context", 0.0),
             "r_no_progress_penalty": res.get("r_no_progress_penalty", 0.0),
             "batch_elite_rank": res.get("batch_elite_rank"),
             "batch_elite_tier": res.get("batch_elite_tier", "none"),
@@ -3178,8 +3701,10 @@ def base_discovery_reward_fn(
     graph_info=None,
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
+    batch_descriptor_keys: List[str] = None,
     prompt_goal_tags: List[str] = None,
     archive_snapshot_family_counts: Optional[Dict[str, int]] = None,
+    archive_snapshot_descriptor_counts: Optional[Dict[str, int]] = None,
     group_baseline_train_acc: Optional[float] = None,
     group_baseline_reward_target_acc: Optional[float] = None,
     reward_batch_index: Optional[int] = None,
@@ -3262,9 +3787,22 @@ def base_discovery_reward_fn(
         res["r_build_partial"] = _compute_build_partial_reward(res)
     res.setdefault("backbone_model_names", backbone_model_names)
 
+    training_context = summarize_stage_training_context(stage_name)
     shallow_one_shot = is_shallow_one_shot_fuse(graph_info)
+    minimal_init_template = _is_minimal_backbone_classifier_template(init_code)
     batch_same_family_count = batch_family_hashes.count(graph_info.family_hash) if batch_family_hashes and graph_info.parse_ok else 0
+    batch_same_graph_count = batch_graph_hashes.count(graph_info.graph_hash) if batch_graph_hashes and graph_info.parse_ok else 0
+    batch_same_descriptor_count = (
+        batch_descriptor_keys.count(graph_info.descriptor_key)
+        if batch_descriptor_keys and graph_info.parse_ok
+        else 0
+    )
     archive_snapshot_family_freq = int((archive_snapshot_family_counts or {}).get(graph_info.family_hash, 0)) if graph_info.parse_ok else 0
+    archive_snapshot_descriptor_freq = (
+        int((archive_snapshot_descriptor_counts or {}).get(graph_info.descriptor_key, 0))
+        if graph_info.parse_ok
+        else 0
+    )
 
     novel_vs_trainset_family = False
     novel_vs_trainset_graph = False
@@ -3295,9 +3833,15 @@ def base_discovery_reward_fn(
     r_batch_elite = 0.0
     r_repeat_family = 0.0
     r_plain_fuse_penalty = 0.0
+    r_template_penalty = 0.0
+    r_history_context = 0.0
     r_no_progress_penalty = 0.0
+    r_descriptor_diversity = 0.0
+    stage1_validity_scale = 0.0
     dominant_family_repeat = False
+    dominant_descriptor_repeat = False
     plain_parallel_repeat = False
+    descriptor_reward_cap_applied = False
     executable_candidate = _is_executable_candidate(res, graph_info)
     formal_success_candidate = _is_trainable_candidate(res, graph_info)
     discovery_candidate = False
@@ -3329,6 +3873,7 @@ def base_discovery_reward_fn(
             novel_vs_trainset_family=novel_vs_trainset_family,
             novel_vs_trainset_graph=novel_vs_trainset_graph,
             shallow_one_shot=shallow_one_shot,
+            use_formal_archive_bonus=stage_name != STAGE1_STRUCTURE_EXPLORE,
         )
         if (
             (not group_warmup)
@@ -3349,16 +3894,51 @@ def base_discovery_reward_fn(
 
     if stage_name == STAGE1_STRUCTURE_EXPLORE:
         reward_target_value = None
+        stage1_validity_scale = _stage1_validity_scale(res)
+        r_dense = _stage1_validity_reward(res, graph_info)
+        r_template_penalty = _template_penalty(
+            stage_name=stage_name,
+            shallow_one_shot=shallow_one_shot,
+            minimal_init_template=minimal_init_template,
+        )
         if executable_candidate:
-            r_dense = STAGE1_EXECUTABLE_BONUS
-            r_structure_group *= STAGE1_STRUCTURE_GROUP_SCALE
-            r_structure_archive *= STAGE1_STRUCTURE_ARCHIVE_SCALE
-            if discovery_candidate:
-                r_goal_best = STAGE1_DISCOVERY_FAMILY_BONUS
-            elif novel_vs_trainset_graph:
-                r_goal_best = STAGE1_DISCOVERY_GRAPH_BONUS
+            novelty_scale = max(0.35, float(stage1_validity_scale))
+            r_structure_group *= STAGE1_STRUCTURE_GROUP_SCALE * float(stage1_validity_scale)
+            r_structure_archive *= STAGE1_STRUCTURE_ARCHIVE_SCALE * float(stage1_validity_scale)
+            if batch_same_descriptor_count == 1:
+                r_structure_group += STAGE1_DESCRIPTOR_BATCH_UNIQUE_BONUS * novelty_scale
+                if batch_same_graph_count == 1:
+                    r_structure_group += STAGE1_GRAPH_BATCH_UNIQUE_BONUS * novelty_scale
             else:
-                r_no_progress_penalty = STAGE1_NON_DISCOVERY_EXECUTABLE_PENALTY
+                descriptor_batch_repeat_penalty = max(
+                    STAGE1_DESCRIPTOR_BATCH_REPEAT_MAX_PENALTY,
+                    STAGE1_DESCRIPTOR_BATCH_REPEAT_STEP_PENALTY * float(batch_same_descriptor_count - 1),
+                )
+                r_no_progress_penalty += descriptor_batch_repeat_penalty
+                if batch_same_graph_count > 1:
+                    graph_batch_repeat_penalty = max(
+                        STAGE1_GRAPH_BATCH_REPEAT_MAX_PENALTY,
+                        STAGE1_GRAPH_BATCH_REPEAT_STEP_PENALTY * float(batch_same_graph_count - 1),
+                    )
+                    r_no_progress_penalty += graph_batch_repeat_penalty
+            if archive_snapshot_descriptor_freq <= 0:
+                r_structure_archive += STAGE1_DESCRIPTOR_ARCHIVE_NOVEL_BONUS * novelty_scale
+            elif archive_snapshot_descriptor_freq > 1:
+                descriptor_archive_repeat_penalty = max(
+                    STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_MAX_PENALTY,
+                    STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_STEP_PENALTY * float(archive_snapshot_descriptor_freq - 1),
+                )
+                r_no_progress_penalty += descriptor_archive_repeat_penalty
+            if discovery_candidate:
+                r_goal_best = STAGE1_DISCOVERY_FAMILY_BONUS * novelty_scale
+            elif novel_vs_trainset_graph:
+                r_goal_best = STAGE1_DISCOVERY_GRAPH_BONUS * novelty_scale
+            else:
+                r_no_progress_penalty += STAGE1_NON_DISCOVERY_EXECUTABLE_PENALTY
+            if not res.get("backward_ok"):
+                r_no_progress_penalty += -0.06
+            elif not res.get("loss_drop_ok"):
+                r_no_progress_penalty += -0.04
             if archive_snapshot_family_freq > 0:
                 archive_repeat_penalty = max(
                     STAGE1_ARCHIVE_REPEAT_MAX_PENALTY,
@@ -3371,11 +3951,12 @@ def base_discovery_reward_fn(
                     STAGE1_BATCH_REPEAT_STEP_PENALTY * float(batch_same_family_count - 2),
                 )
                 r_no_progress_penalty += batch_repeat_penalty
-            r_goal_match = STAGE1_GOAL_MATCH_SCALE * goal_tag_hit_rate
+            r_goal_match = STAGE1_GOAL_MATCH_SCALE * goal_tag_hit_rate * novelty_scale
             r_repeat_family = _clip(r_repeat_family, STAGE1_DOMINANT_FAMILY_PENALTY, 0.0)
             r_plain_fuse_penalty = _clip(r_plain_fuse_penalty, STAGE1_PLAIN_PARALLEL_PENALTY, 0.0)
             reward_target_value = _clip(
                 STAGE1_STATIC_BASE_SCORE
+                + max(0.0, r_dense)
                 + max(0.0, r_goal_best)
                 + max(0.0, r_structure_group)
                 + max(0.0, r_structure_archive),
@@ -3392,8 +3973,27 @@ def base_discovery_reward_fn(
                 or shallow_pattern_repeat
                 or plain_parallel_repeat
                 or dominant_family_repeat
+                or minimal_init_template
             ):
                 reward_target_value = min(float(reward_target_value), 0.18)
+                if minimal_init_template:
+                    reward_target_value = min(float(reward_target_value), 0.12)
+        r_history_context = _history_context_reward(
+            stage_name=stage_name,
+            training_context=training_context,
+            executable_candidate=executable_candidate,
+            formal_success_candidate=formal_success_candidate,
+            discovery_candidate=discovery_candidate,
+            novel_vs_trainset_family=novel_vs_trainset_family,
+            novel_vs_trainset_graph=novel_vs_trainset_graph,
+            dominant_family_repeat=dominant_family_repeat,
+            dominant_descriptor_repeat=False,
+            shallow_one_shot=shallow_one_shot,
+            plain_parallel_repeat=plain_parallel_repeat,
+            minimal_init_template=minimal_init_template,
+            batch_same_descriptor_count=batch_same_descriptor_count,
+            validity_scale=stage1_validity_scale,
+        )
         if (reward_target_value is not None) and (effective_group_baseline_reward_target_acc is not None) and (not group_warmup):
             group_reward_target_gain = float(reward_target_value - effective_group_baseline_reward_target_acc)
             group_reward_target_improved = bool(group_reward_target_gain >= GROUP_IMPROVEMENT_DELTA)
@@ -3404,6 +4004,8 @@ def base_discovery_reward_fn(
             + r_structure_archive
             + r_repeat_family
             + r_plain_fuse_penalty
+            + r_template_penalty
+            + r_history_context
             + r_no_progress_penalty
         )
         r_tiebreak = r_goal_match
@@ -3466,7 +4068,65 @@ def base_discovery_reward_fn(
                     0.0,
                 )
 
+        descriptor_progress_refresh = bool(beat_prev_target or beat_best_target or r_goal_best > 0.0)
+        if executable_candidate and graph_info.parse_ok and graph_info.descriptor_key:
+            if batch_same_descriptor_count == 1:
+                r_descriptor_diversity += STAGE23_DESCRIPTOR_BATCH_UNIQUE_BONUS
+            elif batch_same_descriptor_count > 1:
+                r_descriptor_diversity += max(
+                    STAGE23_DESCRIPTOR_BATCH_REPEAT_MAX_PENALTY,
+                    STAGE23_DESCRIPTOR_BATCH_REPEAT_STEP_PENALTY * float(batch_same_descriptor_count - 1),
+                )
+
+            if archive_snapshot_descriptor_freq <= 0:
+                r_descriptor_diversity += STAGE23_DESCRIPTOR_ARCHIVE_NOVEL_BONUS
+            elif archive_snapshot_descriptor_freq > 1:
+                r_descriptor_diversity += max(
+                    STAGE23_DESCRIPTOR_ARCHIVE_REPEAT_MAX_PENALTY,
+                    STAGE23_DESCRIPTOR_ARCHIVE_REPEAT_STEP_PENALTY * float(archive_snapshot_descriptor_freq - 1),
+                )
+
+            if (
+                (not group_warmup)
+                and dominant_descriptor_key
+                and graph_info.descriptor_key != dominant_descriptor_key
+                and float(dominant_descriptor_share or 0.0) >= STAGE23_DOMINANT_DESCRIPTOR_SOFT_SHARE
+            ):
+                r_descriptor_diversity += STAGE23_NON_DOMINANT_DESCRIPTOR_BONUS
+            elif (
+                (not group_warmup)
+                and dominant_descriptor_key
+                and graph_info.descriptor_key == dominant_descriptor_key
+                and float(dominant_descriptor_share or 0.0) >= STAGE23_DOMINANT_DESCRIPTOR_SOFT_SHARE
+                and not descriptor_progress_refresh
+            ):
+                dominant_descriptor_repeat = True
+                if float(dominant_descriptor_share or 0.0) >= STAGE23_DOMINANT_DESCRIPTOR_STRONG_SHARE:
+                    r_descriptor_diversity += STAGE23_DOMINANT_DESCRIPTOR_REPEAT_STRONG_PENALTY
+                else:
+                    r_descriptor_diversity += STAGE23_DOMINANT_DESCRIPTOR_REPEAT_PENALTY
+
         r_goal_match = stage_profile["goal_match_scale"] * GOAL_MATCH_REWARD_SCALE * goal_tag_hit_rate
+        r_template_penalty = _template_penalty(
+            stage_name=stage_name,
+            shallow_one_shot=shallow_one_shot,
+            minimal_init_template=minimal_init_template,
+        )
+        r_history_context = _history_context_reward(
+            stage_name=stage_name,
+            training_context=training_context,
+            executable_candidate=executable_candidate,
+            formal_success_candidate=formal_success_candidate,
+            discovery_candidate=discovery_candidate,
+            novel_vs_trainset_family=novel_vs_trainset_family,
+            novel_vs_trainset_graph=novel_vs_trainset_graph,
+            dominant_family_repeat=dominant_family_repeat,
+            dominant_descriptor_repeat=dominant_descriptor_repeat,
+            shallow_one_shot=shallow_one_shot,
+            plain_parallel_repeat=plain_parallel_repeat,
+            minimal_init_template=minimal_init_template,
+            batch_same_descriptor_count=batch_same_descriptor_count,
+        )
         r_structure_group *= stage_profile["structure_scale"]
         r_structure_archive *= stage_profile["structure_scale"]
         r_repeat_family *= stage_profile["repeat_family_scale"]
@@ -3480,15 +4140,21 @@ def base_discovery_reward_fn(
             + r_generalization
             + r_structure_group
             + r_structure_archive
+            + r_descriptor_diversity
             + r_batch_elite
             + r_repeat_family
             + r_plain_fuse_penalty
+            + r_template_penalty
+            + r_history_context
             + r_no_progress_penalty
         )
         r_tiebreak = r_goal_match
         total_reward = _clip(r_primary + r_tiebreak, -2.0, 2.0)
         if formal_success_candidate and prev_target_reward_target_acc is not None and not beat_prev_target:
             total_reward = min(total_reward, stage_profile["non_improving_cap"])
+        if formal_success_candidate and dominant_descriptor_repeat:
+            total_reward = min(total_reward, stage_profile["descriptor_non_improving_cap"])
+            descriptor_reward_cap_applied = True
         if stage_name == STAGE2_FORMAL_EXPLORE:
             total_reward = _apply_executability_clamp(res, total_reward, graph_info)
         else:
@@ -3544,9 +4210,12 @@ def base_discovery_reward_fn(
     res['r_generalization'] = r_generalization
     res['r_structure_group'] = r_structure_group
     res['r_structure_archive'] = r_structure_archive
+    res['r_descriptor_diversity'] = r_descriptor_diversity
     res['r_batch_elite'] = r_batch_elite
     res['r_repeat_family'] = r_repeat_family
     res['r_plain_fuse_penalty'] = r_plain_fuse_penalty
+    res['r_template_penalty'] = r_template_penalty
+    res['r_history_context'] = r_history_context
     res['r_no_progress_penalty'] = r_no_progress_penalty
     res['batch_elite_rank'] = None
     res['batch_elite_tier'] = "none"
@@ -3567,6 +4236,13 @@ def base_discovery_reward_fn(
     res['family_expr'] = graph_info.family_expr
     res['family_hash'] = graph_info.family_hash
     res['descriptor_key'] = graph_info.descriptor_key
+    res['dominant_descriptor_key'] = dominant_descriptor_key
+    res['dominant_descriptor_share'] = dominant_descriptor_share
+    res['unique_descriptor_count'] = len(descriptor_archive_counts)
+    res['dominant_descriptor_repeat'] = dominant_descriptor_repeat
+    res['descriptor_reward_cap_applied'] = descriptor_reward_cap_applied
+    res['history_exploration_pressure'] = float(training_context.get('exploration_pressure') or 0.0)
+    res['minimal_init_template'] = minimal_init_template
     res['graph_expr'] = graph_info.graph_expr
     res['pattern_name'] = effective_pattern_name
     res['suggested_pattern_name'] = graph_info.suggested_pattern_name
@@ -3582,9 +4258,12 @@ def base_discovery_reward_fn(
         'r_generalization': r_generalization,
         'r_structure_group': r_structure_group,
         'r_structure_archive': r_structure_archive,
+        'r_descriptor_diversity': r_descriptor_diversity,
         'r_batch_elite': r_batch_elite,
         'r_repeat_family': r_repeat_family,
         'r_plain_fuse_penalty': r_plain_fuse_penalty,
+        'r_template_penalty': r_template_penalty,
+        'r_history_context': r_history_context,
         'r_no_progress_penalty': r_no_progress_penalty,
         'batch_elite_rank': None,
         'batch_elite_tier': "none",
@@ -3612,12 +4291,24 @@ def base_discovery_reward_fn(
         'reward_group_id': reward_group_id,
         'group_warmup': group_warmup,
         'prompt_goal_tags': list(prompt_goal_tags or []),
+        'batch_same_graph_count': batch_same_graph_count,
+        'batch_same_family_count': batch_same_family_count,
+        'batch_same_descriptor_count': batch_same_descriptor_count,
+        'archive_snapshot_family_freq': archive_snapshot_family_freq,
+        'archive_snapshot_descriptor_freq': archive_snapshot_descriptor_freq,
         'macro_structure_ok': passes_macro_structure_gate(graph_info),
         'is_multi_stage_architecture': is_multi_stage_architecture(graph_info),
         'is_shallow_one_shot_fuse': shallow_one_shot,
         'family_id': graph_info.family_id,
         'family_hash': graph_info.family_hash,
         'descriptor_key': graph_info.descriptor_key,
+        'dominant_descriptor_key': dominant_descriptor_key,
+        'dominant_descriptor_share': dominant_descriptor_share,
+        'unique_descriptor_count': len(descriptor_archive_counts),
+        'dominant_descriptor_repeat': dominant_descriptor_repeat,
+        'descriptor_reward_cap_applied': descriptor_reward_cap_applied,
+        'history_exploration_pressure': float(training_context.get('exploration_pressure') or 0.0),
+        'minimal_init_template': minimal_init_template,
         'depth': graph_info.depth,
         'merges': graph_info.merges,
         'max_fan_in': graph_info.max_fan_in,
@@ -3652,8 +4343,10 @@ def reward_fn(
     graph_info=None,
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
+    batch_descriptor_keys: List[str] = None,
     prompt_goal_tags: List[str] = None,
     archive_snapshot_family_counts: Optional[Dict[str, int]] = None,
+    archive_snapshot_descriptor_counts: Optional[Dict[str, int]] = None,
     group_baseline_train_acc: Optional[float] = None,
     group_baseline_reward_target_acc: Optional[float] = None,
     reward_batch_index: Optional[int] = None,
@@ -3670,8 +4363,10 @@ def reward_fn(
         graph_info=graph_info,
         batch_graph_hashes=batch_graph_hashes,
         batch_family_hashes=batch_family_hashes,
+        batch_descriptor_keys=batch_descriptor_keys,
         prompt_goal_tags=prompt_goal_tags,
         archive_snapshot_family_counts=archive_snapshot_family_counts,
+        archive_snapshot_descriptor_counts=archive_snapshot_descriptor_counts,
         group_baseline_train_acc=group_baseline_train_acc,
         group_baseline_reward_target_acc=group_baseline_reward_target_acc,
         reward_batch_index=reward_batch_index,
@@ -3942,20 +4637,12 @@ def _precompute_eval_results(
         f"reward_batch_index={group_context.get('reward_batch_index')} "
         f"entries={len(batched_eval_specs)}"
     )
-    log_memory_snapshot(
-        "reward/precompute_eval:start",
-        group_context=group_context,
-    )
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     batched_eval_results = evaluate_code_and_reward_batch(batched_eval_specs)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     elapsed_seconds = max(0.0, time.time() - started_at)
-    log_memory_snapshot(
-        "reward/precompute_eval:end",
-        group_context=group_context,
-    )
     print(
         "[Reward Precompute Local] end "
         f"rank={rank} "
@@ -4047,12 +4734,17 @@ def _score_reward_entries(
     group_context: Dict[str, Any],
     archive_snapshot_family_counts: Dict[str, int],
 ) -> List[Dict[str, Any]]:
+    archive_snapshot_descriptor_counts = dict(descriptor_archive_counts)
     batch_graph_hashes = [
         entry["graph_info"].graph_hash if entry.get("graph_info") and entry["graph_info"].parse_ok else "incomplete"
         for entry in entries
     ]
     batch_family_hashes = [
         entry["graph_info"].family_hash if entry.get("graph_info") and entry["graph_info"].parse_ok else "incomplete"
+        for entry in entries
+    ]
+    batch_descriptor_keys = [
+        entry["graph_info"].descriptor_key if entry.get("graph_info") and entry["graph_info"].parse_ok else "incomplete"
         for entry in entries
     ]
     scored_results: List[Dict[str, Any]] = []
@@ -4069,8 +4761,10 @@ def _score_reward_entries(
                 graph_info=entry.get("graph_info"),
                 batch_graph_hashes=batch_graph_hashes,
                 batch_family_hashes=batch_family_hashes,
+                batch_descriptor_keys=batch_descriptor_keys,
                 prompt_goal_tags=entry.get("prompt_goal_tags"),
                 archive_snapshot_family_counts=archive_snapshot_family_counts,
+                archive_snapshot_descriptor_counts=archive_snapshot_descriptor_counts,
                 group_baseline_train_acc=group_context["group_baseline_train_acc"],
                 group_baseline_reward_target_acc=group_context["group_baseline_reward_target_acc"],
                 reward_batch_index=group_context["reward_batch_index"],
@@ -4147,6 +4841,9 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
             graph_archive_counts[graph_info.graph_hash] += 1
             family_archive_counts[graph_info.family_id] += 1
             family_hash_archive_counts[graph_info.family_hash] += 1
+            descriptor_archive_key = str(res.get("descriptor_key") or getattr(graph_info, "descriptor_key", "") or "")
+            if descriptor_archive_key:
+                descriptor_archive_counts[descriptor_archive_key] += 1
             motif_name_counts[res.get("pattern_name", graph_info.suggested_pattern_name)] += 1
             get_goal_counter(goal_graph_archive_counts, goal_key)[graph_info.graph_hash] += 1
             get_goal_counter(goal_family_hash_archive_counts, goal_key)[graph_info.family_hash] += 1
@@ -4209,9 +4906,19 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
                 "stage_index": int(res.get("current_stage_index") or RL_STAGE_TO_INDEX.get(current_stage_name, 0)),
                 "family_hash": str(res.get("family_hash") or getattr(graph_info, "family_hash", "") or ""),
                 "graph_hash": str(res.get("graph_hash") or getattr(graph_info, "graph_hash", "") or ""),
+                "descriptor_key": str(res.get("descriptor_key") or getattr(graph_info, "descriptor_key", "") or ""),
                 "reward": score,
                 "reward_target_metric": str(res.get("reward_target_metric") or ""),
                 "reward_target_value": reward_target_value,
+                "loss_end": _optional_float(res.get("loss_end")),
+                "best_epoch_loss": _optional_float(res.get("best_epoch_loss")),
+                "avg_epoch_loss": _optional_float(res.get("avg_epoch_loss")),
+                "epochs_completed": int(res.get("epochs_completed", 0) or 0),
+                "training_context_metric_name": str(res.get("training_context_metric_name") or ""),
+                "training_context_metric_value": _optional_float(res.get("training_context_metric_value")),
+                "trained_step_ok": bool(res.get("trained_step_ok")),
+                "backward_ok": bool(res.get("backward_ok")),
+                "loss_drop_ok": bool(res.get("loss_drop_ok")),
                 "executable_candidate": bool(res.get("executable_candidate", is_executable)),
                 "discovery_candidate": bool(res.get("discovery_candidate")),
                 "formal_success_candidate": bool(res.get("formal_success_candidate", is_trainable)),
@@ -4224,7 +4931,6 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
     group_close_result = close_reward_group_if_needed()
     if group_close_result is not None:
         code_logger.log_to_file(f"[Reward Group] {group_close_result}")
-        log_memory_snapshot("reward_group:closed")
 
 
 def _print_discovery_metrics() -> None:
@@ -4232,6 +4938,7 @@ def _print_discovery_metrics() -> None:
     unique_count = len(graph_archive_counts)
     unique_families = len(family_archive_counts)
     unique_skeletons = len(family_hash_archive_counts)
+    unique_descriptors = len(descriptor_archive_counts)
 
     if total_valid > 0:
         most_common_count = family_hash_archive_counts.most_common(1)[0][1]
@@ -4248,11 +4955,13 @@ def _print_discovery_metrics() -> None:
 
     print(
         f"\n[Discovery Metrics] Unique Graphs: {unique_count}, "
-        f"Families: {unique_families}, Skeletons: {unique_skeletons}, Dominant Family Share: {dominant_share:.2%}, Entropy: {entropy:.2f}"
+        f"Families: {unique_families}, Skeletons: {unique_skeletons}, Descriptors: {unique_descriptors}, "
+        f"Dominant Family Share: {dominant_share:.2%}, Entropy: {entropy:.2f}"
     )
     print(f"[Graph Archive] Top 5 Exact Graphs: {dict(graph_archive_counts.most_common(5))}")
     print(f"[Family Archive] Top 5 Family IDs: {dict(family_archive_counts.most_common(5))}")
     print(f"[Family Archive] Top 5 Skeletons: {dict(family_hash_archive_counts.most_common(5))}")
+    print(f"[Descriptor Archive] Top 5: {dict(descriptor_archive_counts.most_common(5))}")
     print(f"[Motif Names] Top 5: {dict(motif_name_counts.most_common(5))}")
     goal_summary = {
         goal_key: len(counter)
@@ -4262,12 +4971,9 @@ def _print_discovery_metrics() -> None:
 
 
 def compute_reward(prompts, completions, **kwargs):
-    import ab.gpt.TuneRLRaw as TuneRLRaw
-
-    TuneRLRaw.clear_extraction_meta_cache()
+    clear_extraction_meta_cache()
     seed_accuracy_baselines = require_sample_accuracy_baselines(kwargs, len(completions))
     group_context = current_reward_group_context()
-    log_memory_snapshot("compute_reward:start", group_context=group_context)
 
     try:
         expected_world_size = max(1, env_int("WORLD_SIZE", 1))
@@ -4404,11 +5110,7 @@ def compute_reward(prompts, completions, **kwargs):
         restore_reward_runtime_state(synced_payload.get("reward_state"))
         return list(synced_payload["rewards_by_rank"].get(rank, [-1.0] * len(completions)))
     finally:
-        TuneRLRaw.clear_extraction_meta_cache()
-        log_memory_snapshot(
-            "compute_reward:end",
-            group_context=current_reward_group_context(),
-        )
+        clear_extraction_meta_cache()
 
 PROMPT_TEMPLATE = SFTUtil.open_discovery_prompt_template
 
@@ -4465,16 +5167,18 @@ def main():
     torch.cuda.empty_cache()
     resume_checkpoint_dir = _resolve_resume_checkpoint_dir()
     resume_manifest = None
-    resume_reward_state = None
+    restored_reward_state_path = None
     resume_stage_override = os.getenv("NNGPT_RL_RESUME_STAGE", "").strip()
     if resume_checkpoint_dir is not None:
-        if not resume_checkpoint_dir.exists():
-            raise FileNotFoundError(f"Resume checkpoint directory not found: {resume_checkpoint_dir}")
-        resume_manifest = _load_json_if_exists(resume_checkpoint_dir / "stage_manifest.json")
-        resume_reward_state = _load_json_if_exists(resume_checkpoint_dir / "reward_state.json")
-        if resume_reward_state is None:
-            raise FileNotFoundError(f"Missing reward_state.json under {resume_checkpoint_dir}")
-        restore_reward_runtime_state(resume_reward_state)
+        resume_manifest = _load_json_if_exists(resume_checkpoint_dir / "runtime_manifest.json")
+        if resume_manifest is None:
+            resume_manifest = _load_json_if_exists(resume_checkpoint_dir / "stage_manifest.json")
+        # Restore runtime state through the shared helper before stage-specific overrides run.
+        restored_reward_state_path = TrainingRuntime.restore_or_reset_runtime_state(
+            resume_checkpoint_dir,
+            _reward_runtime_hooks(),
+            legacy_state_filenames=("reward_state.json",),
+        )
         if resume_stage_override:
             current_state_stage = str(current_stage_name)
             if current_state_stage != resume_stage_override:
@@ -4488,8 +5192,14 @@ def main():
             f"dir={resume_checkpoint_dir} stage={current_stage_name} "
             f"generation_total={_current_generation_total()} reward_batch_index={reward_batch_index}"
         )
+        if restored_reward_state_path is not None:
+            print(f"[RL] Restored runtime state from {restored_reward_state_path}")
     else:
-        reset_reward_runtime_state()
+        TrainingRuntime.restore_or_reset_runtime_state(
+            None,
+            _reward_runtime_hooks(),
+            legacy_state_filenames=("reward_state.json",),
+        )
     precision = best_mixed_precision()
     runtime = get_distributed_runtime_info()
     runtime_settings = resolve_rl_runtime_settings(runtime)
@@ -4634,20 +5344,16 @@ def main():
         args=grpo_config,
     )
     prewarm_eval_workers(timeout_seconds=60.0, require_gpu=True)
-    log_memory_snapshot("rl/reward_workers_prewarmed")
+    register_stage_checkpoint_signal_handlers()
 
     print("Starting GRPO training for Backbone Search...")
-    memory_monitor = start_cuda_memory_monitor("rl/trainer")
     try:
-        log_memory_snapshot("rl/before_trainer_train")
         trainer.train()
     except Exception as exc:
         if is_cuda_oom_error(exc):
             log_cuda_oom_diagnostics("rl/trainer.train", exc)
         raise
     finally:
-        if memory_monitor is not None:
-            memory_monitor.close()
         shutdown_eval_worker()
 
     model_out = run_model_out()

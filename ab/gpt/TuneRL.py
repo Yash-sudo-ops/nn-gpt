@@ -3031,7 +3031,50 @@ def reconstruct_code(
 
 def _compute_build_partial_reward(res: Dict[str, Any]) -> float:
     error_str = str(res.get('error', ''))
+    error_lower = error_str.lower()
+    error_stage = str(res.get("error_stage") or "")
+    error_context = dict(res.get("error_context") or {})
+    code_trace = dict(error_context.get("code_trace") or {})
+    raw_extraction = dict(res.get("raw_extraction") or {})
     build_partial = 0.0
+
+    if error_stage == "cpu_prevalidate":
+        if "must call self.infer_dimensions_dynamically(out_shape[0])" in error_str:
+            build_partial = 0.00
+        elif "infer_dimensions_dynamically() takes 2 positional arguments but 3 were given" in error_str:
+            build_partial = -0.04
+        elif "has no attribute '_input_spec'" in error_lower:
+            build_partial = -0.12
+        elif "has no attribute '_output_dim'" in error_lower or "has no attribute '_input_dim'" in error_lower:
+            build_partial = -0.09
+        elif "has no attribute 'infer_dimensions'" in error_lower:
+            build_partial = -0.08
+        elif "nameerror" in error_lower and any(
+            token in error_str for token in ("dropout_prob", "in_channels", "features", "out_channels")
+        ):
+            build_partial = -0.06
+        elif "keyerror" in error_lower and "out_channels" in error_lower:
+            build_partial = -0.06
+        elif "runtimeerror" in error_lower and "expected input" in error_lower and "to have" in error_lower:
+            build_partial = -0.05
+        else:
+            build_partial = -0.10
+
+        if bool(raw_extraction.get("dual_backbone_ok")):
+            build_partial += 0.02
+        if bool(raw_extraction.get("xml_tag_exact")):
+            build_partial += 0.01
+        if bool(raw_extraction.get("exact_init_signature")):
+            build_partial += 0.02
+        if bool(raw_extraction.get("exact_forward_signature")):
+            build_partial += 0.01
+        if bool(code_trace.get("assigns_input_spec")):
+            build_partial += 0.03
+        elif bool(code_trace.get("references_input_spec")):
+            build_partial -= 0.02
+
+        return _clip(build_partial, -0.12, 0.12)
+
     if 'SyntaxError' in error_str:
         build_partial = -0.3
     elif 'NameError' in error_str or 'ImportError' in error_str:

@@ -389,9 +389,11 @@ Output ONLY the implementation within the XML tags. Each tag MUST contain the co
 open_discovery_rl_prompt_template = """
 ### Output Format
 - Output ONLY `<block>`, `<init>`, `<forward>`
+- Each XML tag must contain the complete function/method definition, including signature and body
 - No markdown, no explanation, no extra text
 - The first non-whitespace token must be `<block>`
 - The last non-whitespace token must be `</forward>`
+- Do not omit any XML tag. Missing tags cause immediate failure.
 
 ### ABI Contract
 In `Net.__init__`, end with this exact tail. Copy it exactly.

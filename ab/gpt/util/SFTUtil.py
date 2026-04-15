@@ -422,6 +422,9 @@ Produce one trainable dual-backbone image-classification architecture that impro
 - Design Brief: {design_brief}
 - Seed reference accuracy: `{accuracy}`. This is context only, not the reward baseline.
 
+### Output Requirement (STRICT)
+Read the optimization feedback below, then start the code task. The final answer still must begin with `<block>` and end with `</forward>`.
+
 [CODE SKELETON START]
 {skeleton_code}
 [CODE SKELETON END]

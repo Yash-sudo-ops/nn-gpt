@@ -1,12 +1,16 @@
+import ast
+import hashlib
 import os
 import shutil
 import random
 import inspect
+import re
 import sys
 import tempfile
+import textwrap
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence, Tuple
 from torch.utils.data import Dataset as TorchDataset
 from ab.gpt.util.Const import conf_dir
 
@@ -65,7 +69,6 @@ SFT_VAL_METRIC_BASELINE = 0.10
 # os.environ["TRANSFORMERS_CACHE"] = SFT_TRANSFORMERS_CACHE
 
 import ab.gpt.TuneRL as TuneRL
-import ab.gpt.TuneRLRaw as TuneRLRaw
 import ab.gpt.util.Reward as RewardUtil
 import ab.gpt.util.SFTUtil as SFTUtil
 import ab.gpt.util.training_runtime as TrainingRuntime
@@ -74,6 +77,420 @@ import ab.gpt.util.training_runtime as TrainingRuntime
 _TRAIN_GPU_TOKENS_ENV = "NNGPT_TRAIN_GPU_TOKENS"
 _AUX_GPU_TOKENS_ENV = "NNGPT_AUX_GPU_TOKENS"
 _REWARD_GPU_TOKENS_ENV = "NNGPT_REWARD_GPU_TOKENS"
+
+REQUIRED_BACKBONE_NAMES = ("backbone_a", "backbone_b")
+BLOCK_SIGNATURE = "def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):"
+INIT_SIGNATURE = "def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:"
+FORWARD_SIGNATURE = "def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:"
+
+_BLOCKED_ATTRS = {
+    "device",
+    "use_amp",
+    "_input_spec",
+    "pattern",
+    "classifier",
+    "infer_dimensions_dynamically",
+    "train_setup",
+    "learn",
+    "criterion",
+    "optimizer",
+    "_scaler",
+}
+
+_EXTRACTION_META_CACHE: Dict[str, Dict[str, object]] = {}
+
+
+def clear_extraction_meta_cache() -> None:
+    _EXTRACTION_META_CACHE.clear()
+
+
+class RawCodeLogger(TuneRL.SimpleCodeLogger):
+    def __init__(self, output_dir: str = "rl_output/raw"):
+        super().__init__(output_dir)
+        self.samples_file = os.path.join(output_dir, "generation_samples.jsonl")
+
+    def log_generation(self, prompt: str, completion: str, reward: float, api_result=None):
+        super().log_generation(prompt, completion, reward, api_result)
+
+
+def _strip_outer_code_fences(text: str) -> str:
+    if not text:
+        return ""
+    text = text.strip()
+    text = re.sub(r"^```(?:python)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def _extract_xml_tag(text: str, tag: str) -> str:
+    match = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", text, re.IGNORECASE | re.DOTALL)
+    return TuneRL.clean_block(match.group(1)) if match else ""
+
+
+def _extract_function_block(text: str, fn_name: str) -> str:
+    lines = text.splitlines()
+    for start_index, line in enumerate(lines):
+        if not re.match(rf"^\s*def {re.escape(fn_name)}\s*\(", line):
+            continue
+        indent = len(line) - len(line.lstrip())
+        end_index = len(lines)
+        for scan_index in range(start_index + 1, len(lines)):
+            stripped = lines[scan_index].lstrip()
+            if not stripped:
+                continue
+            indent_scan = len(lines[scan_index]) - len(stripped)
+            if (stripped.startswith("def ") or stripped.startswith("class ")) and indent_scan <= indent:
+                end_index = scan_index
+                break
+        return textwrap.dedent("\n".join(lines[start_index:end_index])).strip()
+    return ""
+
+
+def _dedupe_keep_order(items: Sequence[str]) -> List[str]:
+    deduped: List[str] = []
+    seen = set()
+    for item in items:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
+def _clean_source_text(text: str) -> str:
+    if not text:
+        return ""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("```python", "").replace("```", "")
+    text = text.replace("<s=", "=")
+    text = text.replace("torch.concat(", "torch.cat(")
+    text = text.replace("torch.concatenate(", "torch.cat(")
+    text = text.replace("self.adaptive_pool_flatten(", "adaptive_pool_flatten(")
+    return text.strip()
+
+
+def _completion_cache_key(text: str) -> str:
+    return hashlib.sha1((text or "").encode("utf-8")).hexdigest()
+
+
+def _infer_attr_role(attr_name: str) -> str:
+    lowered = attr_name.lower()
+    if "fractal" in lowered:
+        return "fractal"
+    if lowered.startswith("backbone"):
+        return "backbone"
+    if "stem" in lowered:
+        return "stem"
+    if any(token in lowered for token in ("project", "bridge", "adapter", "align")):
+        return "project"
+    if any(token in lowered for token in ("fuse", "merge", "gate", "mixer")):
+        return "fuse"
+    return "generic"
+
+
+def _has_structural_attr(attrs: Sequence[str]) -> bool:
+    return any(
+        _infer_attr_role(attr) in {"stem", "project", "fuse", "backbone", "fractal"}
+        for attr in attrs
+    )
+
+
+def _scan_raw_attrs(*texts: str) -> List[str]:
+    attrs: List[str] = []
+    for text in texts:
+        if not text:
+            continue
+        for attr in re.findall(r"self\.([A-Za-z_]\w*)\s*(?:\(|=)", text):
+            if attr in _BLOCKED_ATTRS or attr.startswith("__"):
+                continue
+            attrs.append(attr)
+    return _dedupe_keep_order(attrs)
+
+
+def _prepare_completion_for_xml(completion: str) -> str:
+    stripped = _strip_outer_code_fences(completion or "").lstrip()
+    if "<block>" not in stripped and "</block>" in stripped and "<init>" in stripped:
+        return stripped
+    if "<block>" not in stripped and "</block>" not in stripped and "<init>" in stripped:
+        init_pos = stripped.find("<init>")
+        pre_init = stripped[:init_pos].strip()
+        rest = stripped[init_pos:]
+        if pre_init:
+            return f"<block>\n{BLOCK_SIGNATURE}\n{pre_init}\n</block>\n{rest}"
+        return (
+            f"<block>\n{BLOCK_SIGNATURE}\n"
+            "    return nn.Sequential(nn.Conv2d(in_channels, out_channels, 3, stride, padding, bias=bias))\n"
+            f"</block>\n{rest}"
+        )
+    return stripped
+
+
+def _normalize_required_function(code: str, fn_name: str, signature: str) -> str:
+    code = _strip_outer_code_fences(code)
+    if not code:
+        return ""
+    code = textwrap.dedent(code).strip()
+    if not code:
+        return ""
+
+    lines = code.splitlines()
+    if lines and re.match(rf"^\s*def {re.escape(fn_name)}\s*\(", lines[0]):
+        body_lines = lines[1:]
+    else:
+        body_lines = lines
+
+    body_text = textwrap.dedent("\n".join(body_lines)).strip("\n")
+    if not body_text.strip():
+        return ""
+
+    normalized_body = [f"    {line}" if line.strip() else "" for line in body_text.splitlines()]
+    return f"{signature}\n" + "\n".join(normalized_body)
+
+
+def _normalize_block_code(block_code: str) -> str:
+    return _normalize_required_function(block_code, "drop_conv3x3_block", BLOCK_SIGNATURE)
+
+
+def _normalize_init_code(init_code: str) -> str:
+    return _normalize_required_function(init_code, "__init__", INIT_SIGNATURE)
+
+
+def _normalize_forward_code(forward_code: str) -> str:
+    return _normalize_required_function(forward_code, "forward", FORWARD_SIGNATURE)
+
+
+def _extract_defined_backbones(init_code: str) -> List[str]:
+    return _dedupe_keep_order(re.findall(r"self\.(backbone_[A-Za-z]\w*)\s*=", init_code or ""))
+
+
+def _extract_used_backbones(forward_code: str) -> List[str]:
+    return _dedupe_keep_order(re.findall(r"self\.(backbone_[A-Za-z]\w*)\b", forward_code or ""))
+
+
+def _extract_backbone_model_names(init_code: str) -> List[str]:
+    matches: Dict[str, str] = {}
+    patterns = (
+        r"self\.(backbone_[ab])\s*=\s*TorchVision\(\s*model\s*=\s*['\"]([^'\"]+)['\"]",
+        r"self\.(backbone_[ab])\s*=\s*TorchVision\(\s*['\"]([^'\"]+)['\"]",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, init_code or ""):
+            matches.setdefault(match.group(1), match.group(2))
+    return [matches[name] for name in REQUIRED_BACKBONE_NAMES if name in matches]
+
+
+def _count_xml_tags(text: str, tag: str) -> Tuple[int, int]:
+    return (
+        len(re.findall(rf"<{tag}>", text, re.IGNORECASE)),
+        len(re.findall(rf"</{tag}>", text, re.IGNORECASE)),
+    )
+
+
+def _build_extraction_meta(
+    completion: str,
+    candidate: str,
+    block_code: str,
+    init_code: str,
+    forward_code: str,
+) -> Dict[str, object]:
+    xml_tag_count = sum(bool(code) for code in (block_code, init_code, forward_code))
+    xml_counts = {tag: _count_xml_tags(candidate, tag) for tag in ("block", "init", "forward")}
+    class_count = len(re.findall(r"^\s*class\s+\w+", candidate, re.MULTILINE))
+    import_count = len(re.findall(r"^\s*(?:from|import)\s+\w+", candidate, re.MULTILINE))
+    bad_signature_count = len(re.findall(r"\)\s*-\s*:", candidate))
+    raw_attrs = _scan_raw_attrs(candidate, block_code, init_code, forward_code)
+    structural_attr_detected = _has_structural_attr(raw_attrs)
+
+    defined_backbones = _extract_defined_backbones(init_code)
+    used_backbones = _extract_used_backbones(forward_code)
+    backbone_model_names = _extract_backbone_model_names(init_code)
+    required_backbone_set = set(REQUIRED_BACKBONE_NAMES)
+    dual_backbone_init_ok = set(defined_backbones) == required_backbone_set and len(defined_backbones) == 2
+    dual_backbone_forward_ok = required_backbone_set.issubset(set(used_backbones)) and len(set(used_backbones)) == 2
+    dual_backbone_ok = dual_backbone_init_ok and dual_backbone_forward_ok
+
+    exact_xml = all(start_count == 1 and end_count == 1 for start_count, end_count in xml_counts.values())
+    exact_signatures = {
+        "block": block_code.startswith(BLOCK_SIGNATURE),
+        "init": init_code.startswith(INIT_SIGNATURE),
+        "forward": forward_code.startswith(FORWARD_SIGNATURE),
+    }
+
+    quality_score = 0
+    quality_score += 2 if exact_xml else 0
+    quality_score += sum(1 for ok in exact_signatures.values() if ok)
+    quality_score += 2 if dual_backbone_ok else 0
+    quality_score += 1 if structural_attr_detected else 0
+    quality_score -= min(class_count, 2)
+    quality_score -= min(import_count, 2)
+    quality_score -= min(bad_signature_count, 2)
+
+    return {
+        "xml_tag_count": xml_tag_count,
+        "xml_tag_exact": exact_xml,
+        "xml_counts": xml_counts,
+        "class_count": class_count,
+        "import_count": import_count,
+        "bad_signature_count": bad_signature_count,
+        "structural_attr_detected": structural_attr_detected,
+        "quality_score": quality_score,
+        "exact_block_signature": exact_signatures["block"],
+        "exact_init_signature": exact_signatures["init"],
+        "exact_forward_signature": exact_signatures["forward"],
+        "defined_backbones": defined_backbones,
+        "used_backbones": used_backbones,
+        "backbone_model_names": backbone_model_names,
+        "dual_backbone_init_ok": dual_backbone_init_ok,
+        "dual_backbone_forward_ok": dual_backbone_forward_ok,
+        "dual_backbone_ok": dual_backbone_ok,
+        "candidate_line_count": len(candidate.splitlines()),
+    }
+
+
+def extract_completion_payload_tolerant(completion: str) -> Tuple[Tuple[str, str, str], Dict[str, object]]:
+    cache_key = _completion_cache_key(completion or "")
+    cached = _EXTRACTION_META_CACHE.get(cache_key)
+    if cached:
+        return (
+            (cached["block_code"], cached["init_code"], cached["forward_code"]),
+            dict(cached["meta"]),
+        )
+
+    candidate = _prepare_completion_for_xml(completion or "")
+    block_code = _normalize_block_code(_extract_xml_tag(candidate, "block"))
+    init_code = _normalize_init_code(_extract_xml_tag(candidate, "init"))
+    forward_code = _normalize_forward_code(_extract_xml_tag(candidate, "forward"))
+    meta = _build_extraction_meta(completion or "", candidate, block_code, init_code, forward_code)
+
+    _EXTRACTION_META_CACHE[cache_key] = {
+        "block_code": block_code,
+        "init_code": init_code,
+        "forward_code": forward_code,
+        "meta": meta,
+    }
+    return ((block_code, init_code, forward_code), meta)
+
+
+def extract_completion_blocks_tolerant(completion: str) -> Tuple[str, str, str]:
+    blocks, _ = extract_completion_payload_tolerant(completion)
+    return blocks
+
+
+def extract_completion_meta(completion: str) -> Dict[str, object]:
+    _, meta = extract_completion_payload_tolerant(completion)
+    return meta
+
+
+def raw_reward_fn(
+    completion: str,
+    *,
+    seed_accuracy_baseline: float,
+    precomputed_eval_result: Dict[str, Any] | None = None,
+    graph_info=None,
+    batch_graph_hashes: List[str] = None,
+    batch_family_hashes: List[str] = None,
+    batch_descriptor_keys: List[str] = None,
+    prompt_goal_tags: List[str] = None,
+    archive_snapshot_family_counts: Dict[str, int] = None,
+    archive_snapshot_descriptor_counts: Dict[str, int] = None,
+    group_baseline_train_acc: float | None = None,
+    group_baseline_reward_target_acc: float | None = None,
+    reward_batch_index: int | None = None,
+    reward_group_id: int | None = None,
+    group_warmup: bool = False,
+    completion_index: int | None = None,
+    batch_last_item: bool = False,
+):
+    res = TuneRL.base_discovery_reward_fn(
+        completion,
+        seed_accuracy_baseline=seed_accuracy_baseline,
+        precomputed_eval_result=precomputed_eval_result,
+        graph_info=graph_info,
+        batch_graph_hashes=batch_graph_hashes,
+        batch_family_hashes=batch_family_hashes,
+        batch_descriptor_keys=batch_descriptor_keys,
+        prompt_goal_tags=prompt_goal_tags,
+        archive_snapshot_family_counts=archive_snapshot_family_counts,
+        archive_snapshot_descriptor_counts=archive_snapshot_descriptor_counts,
+        group_baseline_train_acc=group_baseline_train_acc,
+        group_baseline_reward_target_acc=group_baseline_reward_target_acc,
+        reward_batch_index=reward_batch_index,
+        reward_group_id=reward_group_id,
+        group_warmup=group_warmup,
+        completion_index=completion_index,
+        batch_last_item=batch_last_item,
+    )
+    meta = extract_completion_meta(completion)
+    raw_delta = 0.0
+
+    raw_delta -= 0.35 * min(int(meta.get("class_count", 0)), 2)
+    raw_delta -= 0.12 * min(int(meta.get("import_count", 0)), 2)
+    raw_delta -= 0.35 * min(int(meta.get("bad_signature_count", 0)), 2)
+
+    xml_tag_count = int(meta.get("xml_tag_count", 0))
+    if xml_tag_count < 3:
+        raw_delta -= 0.45 * (3 - xml_tag_count)
+    if not meta.get("xml_tag_exact"):
+        raw_delta -= 1.20
+    if not meta.get("exact_block_signature"):
+        raw_delta -= 0.50
+    if not meta.get("exact_init_signature"):
+        raw_delta -= 0.60
+    if not meta.get("exact_forward_signature"):
+        raw_delta -= 0.60
+
+    if meta.get("dual_backbone_ok"):
+        raw_delta += 0.45
+    else:
+        if not meta.get("dual_backbone_init_ok"):
+            raw_delta -= 1.75
+        if not meta.get("dual_backbone_forward_ok"):
+            raw_delta -= 1.75
+
+    res["reward"] = TuneRL._apply_trainability_clamp(
+        res,
+        float(res.get("reward", -2.0)) + raw_delta,
+        graph_info,
+    )
+
+    core_format_violation = bool(
+        not meta.get("xml_tag_exact")
+        or not meta.get("exact_block_signature")
+        or not meta.get("exact_init_signature")
+        or not meta.get("exact_forward_signature")
+    )
+    class_count = int(meta.get("class_count", 0))
+    import_count = int(meta.get("import_count", 0))
+    minor_hygiene_violation = class_count > 0 or import_count > 0
+    severe_hygiene_violation = class_count > 2 or import_count > 2
+
+    if core_format_violation:
+        res["reward"] = min(float(res["reward"]), -3.0)
+    elif severe_hygiene_violation:
+        res["reward"] = min(float(res["reward"]), -2.0)
+    elif minor_hygiene_violation:
+        res["reward"] = min(float(res["reward"]), -1.5)
+
+    if not meta.get("dual_backbone_ok"):
+        res["reward"] = min(float(res["reward"]), -3.5)
+    elif group_warmup and TuneRL._is_trainable_candidate(res, graph_info):
+        res["reward"] = float(res.get("warmup_dense_reward") or 0.0)
+
+    res["raw_extraction"] = {
+        **meta,
+        "raw_delta": raw_delta,
+    }
+    res.setdefault("backbone_model_names", list(meta.get("backbone_model_names", [])))
+    return res
+
+
+def _sft_runtime_state_hooks() -> TrainingRuntime.RuntimeStateHooks:
+    # SFT reuses the RL reward runtime state so checkpoint resume stays compatible.
+    return TrainingRuntime.RuntimeStateHooks(
+        capture=TuneRL.capture_reward_runtime_state,
+        restore=TuneRL.restore_reward_runtime_state,
+        reset=TuneRL.reset_reward_runtime_state,
+    )
 
 
 def _sft_runtime_state_hooks() -> TrainingRuntime.RuntimeStateHooks:
@@ -766,8 +1183,10 @@ def sft_reward_fn(
     graph_info=None,
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
+    batch_descriptor_keys: List[str] = None,
     prompt_goal_tags: List[str] = None,
     archive_snapshot_family_counts: Dict[str, int] = None,
+    archive_snapshot_descriptor_counts: Dict[str, int] = None,
     group_baseline_train_acc: float | None = None,
     group_baseline_reward_target_acc: float | None = None,
     reward_batch_index: int | None = None,
@@ -776,15 +1195,17 @@ def sft_reward_fn(
     completion_index: int | None = None,
     batch_last_item: bool = False,
 ):
-    res = TuneRLRaw.raw_reward_fn(
+    res = raw_reward_fn(
         completion,
         seed_accuracy_baseline=seed_accuracy_baseline,
         precomputed_eval_result=precomputed_eval_result,
         graph_info=graph_info,
         batch_graph_hashes=batch_graph_hashes,
         batch_family_hashes=batch_family_hashes,
+        batch_descriptor_keys=batch_descriptor_keys,
         prompt_goal_tags=prompt_goal_tags,
         archive_snapshot_family_counts=archive_snapshot_family_counts,
+        archive_snapshot_descriptor_counts=archive_snapshot_descriptor_counts,
         group_baseline_train_acc=group_baseline_train_acc,
         group_baseline_reward_target_acc=group_baseline_reward_target_acc,
         reward_batch_index=reward_batch_index,
@@ -886,8 +1307,6 @@ class DynamicSFTPromptDataset(TorchDataset):
 
 def load_rl_dataset_sft(tokenizer) -> TuneRL.Dataset:
     """Load SFT-aligned RL prompts while rendering feedback lazily at access time."""
-    from ab.gpt.TuneRLRaw import BLOCK_SIGNATURE, FORWARD_SIGNATURE, INIT_SIGNATURE
-
     runtime_settings = resolve_sft_runtime_settings(RewardUtil.get_distributed_runtime_info())
     data = TuneRL.api.data(task="img-classification", nn_prefixes=("rl-bb-test1",))
     if data.empty:
@@ -1025,12 +1444,21 @@ def run_sft_training():
     stage_checkpoint_dir = resume_spec["stage_checkpoint_dir"]
     stage_adapter_dir = resume_spec["stage_adapter_dir"]
     resume_state_dir = trainer_checkpoint if trainer_checkpoint is not None else stage_checkpoint_dir
-    # Restore reward-side bookkeeping the same way for trainer and stage checkpoints.
-    restored_reward_state_path = TrainingRuntime.restore_or_reset_runtime_state(
+    resume_stage_override = os.getenv("NNGPT_RL_RESUME_STAGE", "").strip()
+    # Restore pipeline runtime bookkeeping the same way for trainer and stage checkpoints.
+    restored_runtime_state_path = TrainingRuntime.restore_or_reset_runtime_state(
         resume_state_dir,
         _sft_runtime_state_hooks(),
         legacy_state_filenames=("reward_state.json",),
     )
+    if resume_state_dir is not None and resume_stage_override:
+        current_state_stage = str(TuneRL.current_stage_name)
+        if current_state_stage != resume_stage_override:
+            print(
+                "[SFT RL] Resume stage override "
+                f"checkpoint_stage={current_state_stage} requested_stage={resume_stage_override}"
+            )
+            TuneRL.current_stage_name = resume_stage_override
     precision = TuneRL.best_mixed_precision()
     grpo_config = _build_sft_grpo_config(
         precision=precision,
@@ -1044,8 +1472,8 @@ def run_sft_training():
             "[SFT RL] Warning: installed GRPOConfig does not support save_strategy/save_steps; "
             "trainer checkpoints will not be produced."
         )
-    if restored_reward_state_path is not None:
-        print(f"[SFT RL] Restored reward state from {restored_reward_state_path}")
+    if restored_runtime_state_path is not None:
+        print(f"[SFT RL] Restored runtime state from {restored_runtime_state_path}")
 
     print(f"Using RL base model: {TuneRL.base_model}")
     print(
@@ -1063,6 +1491,7 @@ def run_sft_training():
     print(f"[SFT RL] Fixed training device: {train_device}")
     print(f"[SFT RL] Visible CUDA devices: {visible_cuda_devices}")
     print(f"[SFT RL] Mixed precision: {precision['label']} (torch_dtype={precision['torch_dtype']})")
+    print(f"[SFT RL] Current stage: {TuneRL.current_stage_name}")
     print(
         "[SFT RL] Runtime limits: "
         f"dataset_limit={runtime_settings['dataset_limit']} "
@@ -1110,7 +1539,6 @@ def run_sft_training():
     tokenizer = TuneRL.AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    TuneRL.log_memory_snapshot("sft/tokenizer_loaded")
 
     rl_dataset = TuneRL.load_rl_dataset(tokenizer)
     if len(rl_dataset) > runtime_settings["dataset_limit"]:
@@ -1135,7 +1563,6 @@ def run_sft_training():
         **model_load_kwargs,
     )
     _ = hf_deepspeed_config
-    TuneRL.log_memory_snapshot("sft/base_model_loaded")
 
     if load_initial_adapter:
         if not init_adapter_path:
@@ -1169,7 +1596,6 @@ def run_sft_training():
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
     model.print_trainable_parameters()
-    TuneRL.log_memory_snapshot("sft/lora_wrapped")
     TuneRL.active_rl_model = model
     TuneRL.active_rl_tokenizer = tokenizer
 
@@ -1187,15 +1613,12 @@ def run_sft_training():
         )
         if runtime_callback is not None:
             trainer.add_callback(runtime_callback)
-    TuneRL.log_memory_snapshot("sft/grpo_trainer_initialized")
     warmup_diagnostics = RewardUtil.prewarm_eval_workers(timeout_seconds=60.0, require_gpu=True)
     _validate_gpu_reward_worker_bindings(warmup_diagnostics)
-    TuneRL.log_memory_snapshot("sft/reward_workers_prewarmed")
+    TuneRL.register_stage_checkpoint_signal_handlers()
 
     print("Starting GRPO training for Backbone Search...")
-    memory_monitor = TuneRL.start_cuda_memory_monitor("sft/trainer")
     try:
-        TuneRL.log_memory_snapshot("sft/before_trainer_train")
         if trainer_checkpoint is not None:
             print(f"[SFT RL] Resuming trainer state from {trainer_checkpoint}...")
             trainer.train(resume_from_checkpoint=str(trainer_checkpoint))
@@ -1206,8 +1629,6 @@ def run_sft_training():
             TuneRL.log_cuda_oom_diagnostics("sft/trainer.train", exc)
         raise
     finally:
-        if memory_monitor is not None:
-            memory_monitor.close()
         RewardUtil.shutdown_eval_worker()
 
     if save_rl_model:
@@ -1236,7 +1657,8 @@ def patch_sft_runtime() -> tuple[str, str, str]:
     TuneRL.LOAD_EXISTING_MODEL = load_initial_adapter
     TuneRL.SAVED_MODEL_PATH = init_adapter_path if load_initial_adapter else ""
     TuneRL.PROMPT_TEMPLATE = SFT_DISCOVERY_PROMPT_TEMPLATE
-    TuneRL.extract_completion_blocks = TuneRLRaw.extract_completion_blocks_tolerant
+    TuneRL.extract_completion_blocks = extract_completion_blocks_tolerant
+    TuneRL.clear_extraction_meta_cache = clear_extraction_meta_cache
     TuneRL.evaluate_code_and_reward = evaluate_code_and_reward_cifar
     setattr(TuneRL.evaluate_code_and_reward, "_nngpt_eval_cfg_builder", build_sft_reward_eval_cfg)
     TuneRL.reward_fn = sft_reward_fn
@@ -1244,13 +1666,12 @@ def patch_sft_runtime() -> tuple[str, str, str]:
     TuneRL.run_log_dir = resolve_sft_log_dir
     TuneRL.run_model_out = resolve_sft_model_out
     TuneRL.run_epoch_dir = sft_run_epoch_dir
-    TuneRLRaw.RAW_ASSISTANT_PREFIX = ""
     return model_source, tokenizer_source, source_mode
 
 
 def bootstrap_sft_runtime() -> None:
     """Initialize logging and reset extraction cache."""
-    TuneRLRaw.clear_extraction_meta_cache()
+    clear_extraction_meta_cache()
     RewardUtil.shutdown_eval_worker()
     runtime = RewardUtil.get_distributed_runtime_info()
     is_main = _runtime_is_main_process(runtime)
@@ -1288,7 +1709,7 @@ def bootstrap_sft_runtime() -> None:
             shutil.rmtree(TuneRL.run_epoch_dir(), ignore_errors=True)
             print(f"Cleaning existing trainer outputs in {trainer_out_dir}...")
             shutil.rmtree(trainer_out_dir, ignore_errors=True)
-        TuneRL.code_logger = TuneRLRaw.RawCodeLogger(log_dir)
+        TuneRL.code_logger = RawCodeLogger(log_dir)
         sentinel_path.write_text(str(os.getpid()), encoding="utf-8")
         return
 
@@ -1337,6 +1758,7 @@ def main() -> None:
     print(f"[SFT RL] Log dir: {resolve_sft_log_dir()}")
     print(f"[SFT RL] Trainer out: {resolve_sft_trainer_out()}")
     print(f"[SFT RL] Model out: {resolve_sft_model_out()}")
+    print(f"[SFT RL] Stage1 only: {TuneRL.env_flag('NNGPT_RL_STAGE1_ONLY', False)}")
     print(f"[SFT RL] Num epochs: {resolve_sft_num_epochs()}")
     print(f"[SFT RL] Temperature: {SFT_TEMPERATURE}")
     print(f"[SFT RL] KL coef: {TuneRL.env_float('NNGPT_RL_KL_COEF', SFT_KL_COEF):.6f}")

@@ -3,15 +3,18 @@ from dataclasses import dataclass, asdict, replace
 import atexit
 import ast
 import csv
-import time
 import gc
-import multiprocessing as mp
-from concurrent.futures import ThreadPoolExecutor
 import importlib
+import json
+import multiprocessing as mp
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import torch
 import torch.nn as nn
@@ -2511,6 +2514,166 @@ def _formal_first_batch_loss(trainer: Any, prm: Dict[str, Any]) -> Optional[floa
         return None
 
 
+def _coerce_optional_metric_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed != parsed or parsed in {float("inf"), float("-inf")}:
+        return None
+    return parsed
+
+
+def _formal_epoch_stat_sort_key(path: Path) -> tuple[int, Any]:
+    try:
+        return 0, int(path.stem)
+    except (TypeError, ValueError):
+        return 1, path.name
+
+
+def _extract_formal_epoch_stat_record(payload: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                return item
+    return None
+
+
+def _formal_history_from_epoch_rows(epoch_rows: list[Dict[str, Any]]) -> Dict[str, Any]:
+    if not epoch_rows:
+        return {
+            "loss_start": None,
+            "loss_end": None,
+            "loss_drop": None,
+            "loss_drop_ok": False,
+            "best_epoch_loss": None,
+            "avg_epoch_loss": None,
+            "epochs_completed": 0,
+            "epoch_loss_series": [],
+            "training_context_metric_name": "best_epoch_loss",
+            "training_context_metric_value": None,
+            "train_acc": None,
+            "test_acc": None,
+        }
+
+    test_loss_series = [float(item["test_loss"]) for item in epoch_rows if item.get("test_loss") is not None]
+    train_loss_series = [float(item["train_loss"]) for item in epoch_rows if item.get("train_loss") is not None]
+    if len(test_loss_series) == len(epoch_rows) and test_loss_series:
+        loss_series = list(test_loss_series)
+    elif train_loss_series:
+        loss_series = list(train_loss_series)
+    else:
+        loss_series = list(test_loss_series)
+
+    epochs_completed = max(int(item.get("epoch", 0) or 0) for item in epoch_rows)
+    if epochs_completed <= 0:
+        epochs_completed = len(loss_series)
+
+    best_epoch_loss = min(loss_series) if loss_series else None
+    avg_epoch_loss = (
+        float(sum(loss_series) / len(loss_series))
+        if loss_series
+        else None
+    )
+    loss_start = loss_series[0] if loss_series else None
+    loss_end = loss_series[-1] if loss_series else None
+    loss_drop = (
+        float(loss_start - loss_end)
+        if loss_start is not None and loss_end is not None
+        else None
+    )
+    loss_drop_ok = False
+    if loss_start is not None and loss_end is not None:
+        rel_drop_ok = loss_start > 0.0 and (loss_end <= loss_start * 0.98)
+        loss_drop_ok = bool(loss_end < (loss_start - 1e-3) or rel_drop_ok)
+
+    train_acc = next(
+        (item["train_accuracy"] for item in reversed(epoch_rows) if item.get("train_accuracy") is not None),
+        None,
+    )
+    test_acc = next(
+        (item["test_accuracy"] for item in reversed(epoch_rows) if item.get("test_accuracy") is not None),
+        None,
+    )
+
+    return {
+        "loss_start": loss_start,
+        "loss_end": loss_end,
+        "loss_drop": loss_drop,
+        "loss_drop_ok": loss_drop_ok,
+        "best_epoch_loss": best_epoch_loss,
+        "avg_epoch_loss": avg_epoch_loss,
+        "epochs_completed": int(epochs_completed or 0),
+        "epoch_loss_series": list(loss_series),
+        "training_context_metric_name": "best_epoch_loss",
+        "training_context_metric_value": best_epoch_loss,
+        "train_acc": train_acc,
+        "test_acc": test_acc,
+    }
+
+
+def _append_formal_epoch_row(epoch_rows: list[Dict[str, Any]], record: Dict[str, Any], epoch_hint: Any) -> None:
+    if not isinstance(record, dict):
+        return
+    try:
+        epoch_index = int(record.get("epoch") or epoch_hint)
+    except (TypeError, ValueError):
+        epoch_index = len(epoch_rows) + 1
+    epoch_rows.append(
+        {
+            "epoch": epoch_index,
+            "train_loss": _coerce_optional_metric_float(record.get("train_loss")),
+            "test_loss": _coerce_optional_metric_float(record.get("test_loss")),
+            "train_accuracy": _coerce_optional_metric_float(record.get("train_accuracy")),
+            "test_accuracy": _coerce_optional_metric_float(
+                record.get("accuracy", record.get("test_accuracy"))
+            ),
+        }
+    )
+
+
+def _load_formal_training_history(
+    stats_dir: Path,
+    *,
+    summary_path: Optional[Path] = None,
+    min_summary_mtime: Optional[float] = None,
+) -> Dict[str, Any]:
+    epoch_rows: list[Dict[str, Any]] = []
+    for stat_path in sorted(stats_dir.glob("*.json"), key=_formal_epoch_stat_sort_key):
+        try:
+            payload = json.loads(stat_path.read_text())
+        except Exception:
+            continue
+        record = _extract_formal_epoch_stat_record(payload)
+        if not isinstance(record, dict):
+            continue
+        _append_formal_epoch_row(epoch_rows, record, stat_path.stem)
+
+    if epoch_rows:
+        return _formal_history_from_epoch_rows(epoch_rows)
+
+    if summary_path is not None:
+        try:
+            if not summary_path.exists():
+                raise FileNotFoundError(summary_path)
+            if min_summary_mtime is not None and summary_path.stat().st_mtime < float(min_summary_mtime):
+                raise FileNotFoundError(f"stale summary: {summary_path}")
+            summary_payload = json.loads(summary_path.read_text())
+            epoch_details = summary_payload.get("epoch_details") or []
+            for item in epoch_details:
+                _append_formal_epoch_row(epoch_rows, item, len(epoch_rows) + 1)
+            if epoch_rows:
+                return _formal_history_from_epoch_rows(epoch_rows)
+        except Exception:
+            pass
+
+    return _formal_history_from_epoch_rows([])
+
+
 def _formal_eval_with_nn_dataset(
     code: str,
     *,
@@ -2701,18 +2864,24 @@ def _formal_eval_with_nn_dataset(
             "NNGPT_REWARD_FORMAL_MIN_MEASURED_BATCHES",
             8,
         )
-        _model_name, test_acc, _accuracy_to_time, _code_score = nn_api.check_nn(
-            unique_code,
-            str(getattr(cfg, "formal_task", "img-classification")),
-            str(getattr(cfg, "formal_dataset", "cifar-10")),
-            str(getattr(cfg, "formal_metric", "acc")),
-            safe_prm,
-            False,
-            None,
-            None,
-            False,
-            epoch_limit_minutes,
-        )
+        with tempfile.TemporaryDirectory(prefix="nngpt_reward_formal_") as temp_stats_dir:
+            _model_name, test_acc, _accuracy_to_time, _code_score = nn_api.check_nn(
+                unique_code,
+                str(getattr(cfg, "formal_task", "img-classification")),
+                str(getattr(cfg, "formal_dataset", "cifar-10")),
+                str(getattr(cfg, "formal_metric", "acc")),
+                safe_prm,
+                False,
+                None,
+                temp_stats_dir,
+                False,
+                epoch_limit_minutes,
+            )
+            formal_history = _load_formal_training_history(
+                Path(temp_stats_dir),
+                summary_path=Path("out") / "training_summary.json",
+                min_summary_mtime=started_at - 1.0,
+            )
         formal_duration_seconds = max(0.0, time.time() - started_at)
         formal_trace_context["formal_eval_duration_seconds"] = formal_duration_seconds
         components = compute_cv_reward_simple(
@@ -2729,6 +2898,12 @@ def _formal_eval_with_nn_dataset(
             kl_div=cfg.kl_div,
             weights=cfg.weights,
         )
+        train_acc = formal_history.get("train_acc")
+        seed_train_acc_gap = None
+        seed_train_acc_improved = False
+        if train_acc is not None and seed_accuracy_baseline is not None:
+            seed_train_acc_gap = float(train_acc - seed_accuracy_baseline)
+            seed_train_acc_improved = bool(seed_train_acc_gap > 0.0)
         return {
             "reward": components["reward"],
             "components": components,
@@ -2745,11 +2920,23 @@ def _formal_eval_with_nn_dataset(
                 "forward_shape_ok": True,
                 "trained_step_ok": True,
                 "backward_ok": True,
-                "loss_start": None,
-                "loss_end": None,
-                "loss_drop": None,
-                "loss_drop_ok": True,
-                "train_acc": None,
+                "loss_start": formal_history.get("loss_start"),
+                "loss_end": formal_history.get("loss_end"),
+                "loss_drop": formal_history.get("loss_drop"),
+                "loss_drop_ok": bool(formal_history.get("loss_drop_ok", True)),
+                "best_epoch_loss": formal_history.get("best_epoch_loss"),
+                "avg_epoch_loss": formal_history.get("avg_epoch_loss"),
+                "epochs_completed": int(formal_history.get("epochs_completed", 0) or 0),
+                "epoch_loss_series": list(formal_history.get("epoch_loss_series") or []),
+                "training_context_metric_name": str(
+                    formal_history.get("training_context_metric_name") or "best_epoch_loss"
+                ),
+                "training_context_metric_value": formal_history.get("training_context_metric_value"),
+                "train_acc": train_acc,
+                "seed_train_acc_gap": seed_train_acc_gap,
+                "seed_train_acc_improved": seed_train_acc_improved,
+                "train_acc_gain": seed_train_acc_gap,
+                "train_acc_improved": seed_train_acc_improved,
                 "latency_ms": latency_ms,
                 "params_m": params_m,
                 "estimated_total_seconds": formal_duration_seconds,

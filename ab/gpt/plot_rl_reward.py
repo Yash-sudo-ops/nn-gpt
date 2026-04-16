@@ -464,9 +464,9 @@ def _group_means(data: RewardLogData, values: list[float]) -> tuple[list[int], l
     return cycles, means
 
 
-def _cycle_target_summary(data: RewardLogData) -> dict[str, list[float] | list[int]]:
+def _cycle_metric_summary(group_ids: list[int], values: list[float]) -> dict[str, list[float] | list[int]]:
     grouped: dict[int, list[float]] = {}
-    for group_id, value in zip(data.reward_group_id, data.reward_target_value):
+    for group_id, value in zip(group_ids, values):
         grouped.setdefault(int(group_id), []).append(float(value))
 
     cycles = sorted(grouped.keys())
@@ -511,6 +511,10 @@ def _cycle_target_summary(data: RewardLogData) -> dict[str, list[float] | list[i
         "err_down": err_down,
         "err_up": err_up,
     }
+
+
+def _cycle_target_summary(data: RewardLogData) -> dict[str, list[float] | list[int]]:
+    return _cycle_metric_summary(data.reward_group_id, data.reward_target_value)
 
 
 def _group_progress_series(data: RewardLogData, key: str) -> tuple[list[int], list[float]]:
@@ -596,7 +600,14 @@ def compute_stage_summary(data: RewardLogData) -> dict[str, Any]:
     return summary
 
 
-def _plot_dashboard(data: RewardLogData, summary: dict[str, float], *, output_path: Path, window: int) -> None:
+def _plot_dashboard(
+    data: RewardLogData,
+    summary: dict[str, float],
+    *,
+    output_path: Path,
+    window: int,
+    show_target: bool = True,
+) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -633,10 +644,15 @@ def _plot_dashboard(data: RewardLogData, summary: dict[str, float], *, output_pa
 
     axes[1].plot(x, data.train_acc, color="#2E7D32", linewidth=1.2, label="Train Acc")
     axes[1].plot(x, data.frozen_test_acc, color="#6A1B9A", linewidth=1.2, label="Frozen Test Acc")
-    axes[1].plot(x, target_roll, color="#F57C00", linewidth=2.0, label=f"Reward Target MA{window}")
-    axes[1].set_title("Stage1 Static Score / Reward Target" if stage1_only else "Accuracy / Reward Target")
+    if show_target:
+        axes[1].plot(x, target_roll, color="#F57C00", linewidth=2.0, label=f"Reward Target MA{window}")
+        axes[1].set_title("Stage1 Static Score / Reward Target" if stage1_only else "Accuracy / Reward Target")
+        axes[1].set_ylabel("Score" if stage1_only else "Accuracy")
+    else:
+        axes[1].plot(x, data.unfrozen_test_acc, color="#1565C0", linewidth=1.2, label="Unfrozen Test Acc")
+        axes[1].set_title("Actual Accuracy")
+        axes[1].set_ylabel("Accuracy")
     axes[1].set_xlabel("Sample")
-    axes[1].set_ylabel("Score" if stage1_only else "Accuracy")
     axes[1].set_ylim(0, 1)
     axes[1].grid(True, linestyle="--", alpha=0.35)
     axes[1].legend(loc="best", fontsize=8)
@@ -653,62 +669,120 @@ def _plot_dashboard(data: RewardLogData, summary: dict[str, float], *, output_pa
     axes[2].grid(True, linestyle="--", alpha=0.35)
     axes[2].legend(loc="best", fontsize=8)
 
-    cycle_summary = _cycle_target_summary(data)
-    cycles = [int(cycle) for cycle in cycle_summary["cycles"]]
-    progress_cycles, closed_target = _group_progress_series(data, "closed_mean_reward_target_acc")
-    if cycles:
-        axes[3].errorbar(
-            cycles,
-            cycle_summary["avg"],
-            yerr=[cycle_summary["err_down"], cycle_summary["err_up"]],
-            fmt="none",
-            ecolor="#FF9800",
-            elinewidth=1.8,
-            capsize=4,
-            alpha=0.6,
-            label="Cycle Avg Target 95% CI",
-        )
-        axes[3].scatter(
-            cycles,
-            cycle_summary["best"],
-            marker="D",
-            color="#E65100",
-            s=60,
-            edgecolors="white",
-            linewidth=0.8,
-            label="Cycle Best Target",
-            zorder=5,
-        )
-        axes[3].scatter(
-            cycles,
-            cycle_summary["median"],
-            marker="_",
-            color="#D32F2F",
-            s=180,
-            linewidths=2.5,
-            label="Cycle Median Target",
-            zorder=6,
-        )
-        axes[3].scatter(
-            cycles,
-            cycle_summary["avg"],
-            marker="o",
-            color="#F57C00",
-            s=40,
-            edgecolors="black",
-            linewidth=0.5,
-            label="Cycle Avg Target",
-            zorder=4,
-        )
-    if progress_cycles:
-        axes[3].plot(progress_cycles, closed_target, color="#1565C0", linewidth=1.8, label="Closed Mean Target")
-    axes[3].set_title("Cycle Reward Target")
+    if show_target:
+        cycle_summary = _cycle_target_summary(data)
+        cycles = [int(cycle) for cycle in cycle_summary["cycles"]]
+        progress_cycles, closed_target = _group_progress_series(data, "closed_mean_reward_target_acc")
+        if cycles:
+            axes[3].errorbar(
+                cycles,
+                cycle_summary["avg"],
+                yerr=[cycle_summary["err_down"], cycle_summary["err_up"]],
+                fmt="none",
+                ecolor="#FF9800",
+                elinewidth=1.8,
+                capsize=4,
+                alpha=0.6,
+                label="Cycle Avg Target 95% CI",
+            )
+            axes[3].scatter(
+                cycles,
+                cycle_summary["best"],
+                marker="D",
+                color="#E65100",
+                s=60,
+                edgecolors="white",
+                linewidth=0.8,
+                label="Cycle Best Target",
+                zorder=5,
+            )
+            axes[3].scatter(
+                cycles,
+                cycle_summary["median"],
+                marker="_",
+                color="#D32F2F",
+                s=180,
+                linewidths=2.5,
+                label="Cycle Median Target",
+                zorder=6,
+            )
+            axes[3].scatter(
+                cycles,
+                cycle_summary["avg"],
+                marker="o",
+                color="#F57C00",
+                s=40,
+                edgecolors="black",
+                linewidth=0.5,
+                label="Cycle Avg Target",
+                zorder=4,
+            )
+        if progress_cycles:
+            axes[3].plot(progress_cycles, closed_target, color="#1565C0", linewidth=1.8, label="Closed Mean Target")
+        cycle_axis = sorted(set(cycles) | set(progress_cycles))
+        axes[3].set_title("Cycle Reward Target")
+        axes[3].set_ylabel("Target Metric")
+    else:
+        cycle_summary = _cycle_metric_summary(data.reward_group_id, data.frozen_test_acc)
+        cycles = [int(cycle) for cycle in cycle_summary["cycles"]]
+        train_cycles, closed_train = _group_progress_series(data, "closed_mean_train_acc")
+        test_cycles, closed_test = _group_progress_series(data, "closed_mean_test_acc")
+        if cycles:
+            axes[3].errorbar(
+                cycles,
+                cycle_summary["avg"],
+                yerr=[cycle_summary["err_down"], cycle_summary["err_up"]],
+                fmt="none",
+                ecolor="#8E24AA",
+                elinewidth=1.8,
+                capsize=4,
+                alpha=0.6,
+                label="Cycle Avg Frozen Test 95% CI",
+            )
+            axes[3].scatter(
+                cycles,
+                cycle_summary["best"],
+                marker="D",
+                color="#6A1B9A",
+                s=60,
+                edgecolors="white",
+                linewidth=0.8,
+                label="Cycle Best Frozen Test",
+                zorder=5,
+            )
+            axes[3].scatter(
+                cycles,
+                cycle_summary["median"],
+                marker="_",
+                color="#8E24AA",
+                s=180,
+                linewidths=2.5,
+                label="Cycle Median Frozen Test",
+                zorder=6,
+            )
+            axes[3].scatter(
+                cycles,
+                cycle_summary["avg"],
+                marker="o",
+                color="#AB47BC",
+                s=40,
+                edgecolors="black",
+                linewidth=0.5,
+                label="Cycle Avg Frozen Test",
+                zorder=4,
+            )
+        if train_cycles:
+            axes[3].plot(train_cycles, closed_train, color="#2E7D32", linewidth=1.8, label="Closed Mean Train")
+        if test_cycles:
+            axes[3].plot(test_cycles, closed_test, color="#1565C0", linewidth=1.8, label="Closed Mean Frozen Test")
+        cycle_axis = sorted(set(cycles) | set(train_cycles) | set(test_cycles))
+        axes[3].set_title("Cycle Actual Metrics")
+        axes[3].set_ylabel("Accuracy")
     axes[3].set_xlabel("Cycle (Group ID)")
-    axes[3].set_ylabel("Target Metric")
     axes[3].set_ylim(0, 1)
-    if cycles:
-        axes[3].set_xticks(_cycle_xticks(cycles))
-        axes[3].set_xlim(min(cycles) - 0.5, max(cycles) + 0.5)
+    if cycle_axis:
+        axes[3].set_xticks(_cycle_xticks(cycle_axis))
+        axes[3].set_xlim(min(cycle_axis) - 0.5, max(cycle_axis) + 0.5)
     axes[3].grid(True, linestyle="--", alpha=0.35)
     axes[3].legend(loc="best", fontsize=8)
 
@@ -734,7 +808,7 @@ def _plot_dashboard(data: RewardLogData, summary: dict[str, float], *, output_pa
 
     _apply_stage_overlays([axes[0], axes[1], axes[2], axes[5]], data)
 
-    fig.suptitle("RL Reward Dashboard", fontsize=16)
+    fig.suptitle("RL Reward Dashboard" if show_target else "RL Reward Dashboard (Actual Only)", fontsize=16)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     fig.savefig(output_path)
     plt.close(fig)
@@ -824,19 +898,26 @@ def main(argv: Optional[list[str]] = None) -> int:
     stage_summary = compute_stage_summary(data)
     output_path = Path(args.output).expanduser().resolve() if args.output else (log_dir / "reward_dashboard.png")
     stage_overlay_path = log_dir / "reward_dashboard_stage_overlay.png"
+    actual_only_path = log_dir / "reward_dashboard_actual_only.png"
     try:
         _plot_dashboard(data, summary, output_path=output_path, window=max(1, int(args.window)))
         if stage_overlay_path != output_path:
             _plot_dashboard(data, summary, output_path=stage_overlay_path, window=max(1, int(args.window)))
+        if actual_only_path != output_path and actual_only_path != stage_overlay_path:
+            _plot_dashboard(data, summary, output_path=actual_only_path, window=max(1, int(args.window)), show_target=False)
     except ModuleNotFoundError as exc:
         if str(exc.name) != "matplotlib":
             raise
         _write_placeholder_png(output_path)
         if stage_overlay_path != output_path:
             _write_placeholder_png(stage_overlay_path)
+        if actual_only_path != output_path and actual_only_path != stage_overlay_path:
+            _write_placeholder_png(actual_only_path)
         print("matplotlib not available; wrote placeholder PNG outputs instead")
     _write_stage_summary(log_dir / "stage_summary.json", stage_summary)
     _print_summary(data, summary, log_dir=log_dir, output_path=output_path, stage_summary=stage_summary)
+    if actual_only_path != output_path and actual_only_path != stage_overlay_path:
+        print(f"Saved actual-only dashboard to: {actual_only_path}")
     return 0
 
 

@@ -3203,23 +3203,29 @@ def _history_context_reward(
     reward = 0.0
     if stage_name == STAGE1_STRUCTURE_EXPLORE:
         if executable_candidate and novelty_candidate:
-            reward += 0.08 * pressure * max(0.35, float(validity_scale))
+            reward += (0.06 + 0.08 * pressure) * max(0.35, float(validity_scale))
         elif executable_candidate:
-            reward -= 0.04 * pressure
+            reward -= 0.02 + 0.05 * pressure
         if dominant_family_repeat:
-            reward -= 0.06 * pressure
+            reward -= 0.03 + 0.09 * pressure
+        if dominant_descriptor_repeat:
+            reward -= 0.02 + 0.07 * pressure
         if bad_template:
-            reward -= 0.08 * pressure
-        return _clip(reward, -0.16, 0.10)
+            reward -= 0.04 + 0.12 * pressure
+        if batch_same_descriptor_count > 1:
+            reward -= min(0.06, 0.02 * float(batch_same_descriptor_count - 1)) * max(0.35, pressure)
+        return _clip(reward, -0.22, 0.14)
     if formal_success_candidate and novelty_candidate:
-        reward += 0.04 * pressure
+        reward += 0.01 + 0.05 * pressure
     if dominant_family_repeat or dominant_descriptor_repeat:
-        reward -= 0.05 * pressure
+        reward -= 0.02 + 0.06 * pressure
     if bad_template:
-        reward -= 0.04 * pressure
+        reward -= 0.02 + 0.05 * pressure
+    if batch_same_descriptor_count > 1:
+        reward -= min(0.04, 0.012 * float(batch_same_descriptor_count - 1)) * max(0.25, pressure)
     if formal_success_candidate and bool(training_context.get("monotonic_improving")) and pressure < 0.25:
         reward += 0.01
-    return _clip(reward, -0.08, 0.05)
+    return _clip(reward, -0.12, 0.07)
 
 
 def _goal_tag_match_stats(graph_info, prompt_goal_tags: Optional[List[str]]) -> Tuple[int, int, float]:
@@ -3831,6 +3837,7 @@ def base_discovery_reward_fn(
     res.setdefault("backbone_model_names", backbone_model_names)
 
     training_context = summarize_stage_training_context(stage_name)
+    history_pressure = float(training_context.get("exploration_pressure") or 0.0)
     shallow_one_shot = is_shallow_one_shot_fuse(graph_info)
     minimal_init_template = _is_minimal_backbone_classifier_template(init_code)
     batch_same_family_count = batch_family_hashes.count(graph_info.family_hash) if batch_family_hashes and graph_info.parse_ok else 0
@@ -3938,6 +3945,9 @@ def base_discovery_reward_fn(
     if stage_name == STAGE1_STRUCTURE_EXPLORE:
         reward_target_value = None
         stage1_validity_scale = _stage1_validity_scale(res)
+        stage1_descriptor_bonus_scale = 1.0 + 0.80 * history_pressure
+        stage1_descriptor_penalty_scale = 1.0 + 1.10 * history_pressure
+        stage1_structure_pressure_scale = 1.0 + 0.25 * history_pressure
         r_dense = _stage1_validity_reward(res, graph_info)
         r_template_penalty = _template_penalty(
             stage_name=stage_name,
@@ -3946,10 +3956,23 @@ def base_discovery_reward_fn(
         )
         if executable_candidate:
             novelty_scale = max(0.35, float(stage1_validity_scale))
-            r_structure_group *= STAGE1_STRUCTURE_GROUP_SCALE * float(stage1_validity_scale)
-            r_structure_archive *= STAGE1_STRUCTURE_ARCHIVE_SCALE * float(stage1_validity_scale)
+            novelty_reward_scale = 1.0 + 0.30 * history_pressure
+            r_structure_group *= (
+                STAGE1_STRUCTURE_GROUP_SCALE
+                * float(stage1_validity_scale)
+                * stage1_structure_pressure_scale
+            )
+            r_structure_archive *= (
+                STAGE1_STRUCTURE_ARCHIVE_SCALE
+                * float(stage1_validity_scale)
+                * stage1_structure_pressure_scale
+            )
             if batch_same_descriptor_count == 1:
-                r_structure_group += STAGE1_DESCRIPTOR_BATCH_UNIQUE_BONUS * novelty_scale
+                r_structure_group += (
+                    STAGE1_DESCRIPTOR_BATCH_UNIQUE_BONUS
+                    * novelty_scale
+                    * stage1_descriptor_bonus_scale
+                )
                 if batch_same_graph_count == 1:
                     r_structure_group += STAGE1_GRAPH_BATCH_UNIQUE_BONUS * novelty_scale
             else:
@@ -3957,25 +3980,29 @@ def base_discovery_reward_fn(
                     STAGE1_DESCRIPTOR_BATCH_REPEAT_MAX_PENALTY,
                     STAGE1_DESCRIPTOR_BATCH_REPEAT_STEP_PENALTY * float(batch_same_descriptor_count - 1),
                 )
-                r_no_progress_penalty += descriptor_batch_repeat_penalty
+                r_no_progress_penalty += descriptor_batch_repeat_penalty * stage1_descriptor_penalty_scale
                 if batch_same_graph_count > 1:
                     graph_batch_repeat_penalty = max(
                         STAGE1_GRAPH_BATCH_REPEAT_MAX_PENALTY,
                         STAGE1_GRAPH_BATCH_REPEAT_STEP_PENALTY * float(batch_same_graph_count - 1),
                     )
-                    r_no_progress_penalty += graph_batch_repeat_penalty
+                    r_no_progress_penalty += graph_batch_repeat_penalty * stage1_descriptor_penalty_scale
             if archive_snapshot_descriptor_freq <= 0:
-                r_structure_archive += STAGE1_DESCRIPTOR_ARCHIVE_NOVEL_BONUS * novelty_scale
+                r_structure_archive += (
+                    STAGE1_DESCRIPTOR_ARCHIVE_NOVEL_BONUS
+                    * novelty_scale
+                    * stage1_descriptor_bonus_scale
+                )
             elif archive_snapshot_descriptor_freq > 1:
                 descriptor_archive_repeat_penalty = max(
                     STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_MAX_PENALTY,
                     STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_STEP_PENALTY * float(archive_snapshot_descriptor_freq - 1),
                 )
-                r_no_progress_penalty += descriptor_archive_repeat_penalty
+                r_no_progress_penalty += descriptor_archive_repeat_penalty * stage1_descriptor_penalty_scale
             if discovery_candidate:
-                r_goal_best = STAGE1_DISCOVERY_FAMILY_BONUS * novelty_scale
+                r_goal_best = STAGE1_DISCOVERY_FAMILY_BONUS * novelty_scale * novelty_reward_scale
             elif novel_vs_trainset_graph:
-                r_goal_best = STAGE1_DISCOVERY_GRAPH_BONUS * novelty_scale
+                r_goal_best = STAGE1_DISCOVERY_GRAPH_BONUS * novelty_scale * novelty_reward_scale
             else:
                 r_no_progress_penalty += STAGE1_NON_DISCOVERY_EXECUTABLE_PENALTY
             if not res.get("backward_ok"):
@@ -4056,6 +4083,8 @@ def base_discovery_reward_fn(
         total_reward = _apply_executability_clamp(res, total_reward, graph_info)
     else:
         reward_target_value = frozen_test_acc
+        stage23_descriptor_bonus_scale = 1.0 + 0.45 * history_pressure
+        stage23_descriptor_penalty_scale = 1.0 + 0.75 * history_pressure
         if (train_acc is not None) and (group_baseline_train_acc is not None) and (not group_warmup):
             group_train_acc_gain = float(train_acc - group_baseline_train_acc)
             group_train_acc_improved = bool(group_train_acc_gain >= GROUP_IMPROVEMENT_DELTA)
@@ -4114,20 +4143,20 @@ def base_discovery_reward_fn(
         descriptor_progress_refresh = bool(beat_prev_target or beat_best_target or r_goal_best > 0.0)
         if executable_candidate and graph_info.parse_ok and graph_info.descriptor_key:
             if batch_same_descriptor_count == 1:
-                r_descriptor_diversity += STAGE23_DESCRIPTOR_BATCH_UNIQUE_BONUS
+                r_descriptor_diversity += STAGE23_DESCRIPTOR_BATCH_UNIQUE_BONUS * stage23_descriptor_bonus_scale
             elif batch_same_descriptor_count > 1:
                 r_descriptor_diversity += max(
                     STAGE23_DESCRIPTOR_BATCH_REPEAT_MAX_PENALTY,
                     STAGE23_DESCRIPTOR_BATCH_REPEAT_STEP_PENALTY * float(batch_same_descriptor_count - 1),
-                )
+                ) * stage23_descriptor_penalty_scale
 
             if archive_snapshot_descriptor_freq <= 0:
-                r_descriptor_diversity += STAGE23_DESCRIPTOR_ARCHIVE_NOVEL_BONUS
+                r_descriptor_diversity += STAGE23_DESCRIPTOR_ARCHIVE_NOVEL_BONUS * stage23_descriptor_bonus_scale
             elif archive_snapshot_descriptor_freq > 1:
                 r_descriptor_diversity += max(
                     STAGE23_DESCRIPTOR_ARCHIVE_REPEAT_MAX_PENALTY,
                     STAGE23_DESCRIPTOR_ARCHIVE_REPEAT_STEP_PENALTY * float(archive_snapshot_descriptor_freq - 1),
-                )
+                ) * stage23_descriptor_penalty_scale
 
             if (
                 (not group_warmup)
@@ -4135,7 +4164,7 @@ def base_discovery_reward_fn(
                 and graph_info.descriptor_key != dominant_descriptor_key
                 and float(dominant_descriptor_share or 0.0) >= STAGE23_DOMINANT_DESCRIPTOR_SOFT_SHARE
             ):
-                r_descriptor_diversity += STAGE23_NON_DOMINANT_DESCRIPTOR_BONUS
+                r_descriptor_diversity += STAGE23_NON_DOMINANT_DESCRIPTOR_BONUS * stage23_descriptor_bonus_scale
             elif (
                 (not group_warmup)
                 and dominant_descriptor_key
@@ -4145,9 +4174,17 @@ def base_discovery_reward_fn(
             ):
                 dominant_descriptor_repeat = True
                 if float(dominant_descriptor_share or 0.0) >= STAGE23_DOMINANT_DESCRIPTOR_STRONG_SHARE:
-                    r_descriptor_diversity += STAGE23_DOMINANT_DESCRIPTOR_REPEAT_STRONG_PENALTY
+                    r_descriptor_diversity += (
+                        STAGE23_DOMINANT_DESCRIPTOR_REPEAT_STRONG_PENALTY
+                        * stage23_descriptor_penalty_scale
+                    )
                 else:
-                    r_descriptor_diversity += STAGE23_DOMINANT_DESCRIPTOR_REPEAT_PENALTY
+                    r_descriptor_diversity += (
+                        STAGE23_DOMINANT_DESCRIPTOR_REPEAT_PENALTY
+                        * stage23_descriptor_penalty_scale
+                    )
+                if not descriptor_progress_refresh:
+                    r_no_progress_penalty += -0.04 * max(0.35, history_pressure)
 
         r_goal_match = stage_profile["goal_match_scale"] * GOAL_MATCH_REWARD_SCALE * goal_tag_hit_rate
         r_template_penalty = _template_penalty(
@@ -5156,6 +5193,9 @@ def compute_reward(prompts, completions, **kwargs):
         clear_extraction_meta_cache()
 
 PROMPT_TEMPLATE = SFTUtil.open_discovery_prompt_template
+PROMPT_BLOCK_SIGNATURE = "def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):"
+PROMPT_INIT_SIGNATURE = "def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:"
+PROMPT_FORWARD_SIGNATURE = "def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:"
 
 def load_rl_dataset(tokenizer):
     """Load seed tasks for open-ended architecture discovery."""
@@ -5174,6 +5214,12 @@ def load_rl_dataset(tokenizer):
     for _, row in data.iterrows():
         accuracy = _coerce_accuracy_baseline(row.get('accuracy'), context="seed row accuracy")
         for profile in goal_profiles:
+            target_pattern = SFTUtil.goal_profile_target_pattern(profile)
+            module_hints = (
+                "self.backbone_a",
+                "self.backbone_b",
+                *profile["module_hints"],
+            )
             user_prompt = PROMPT_TEMPLATE.format(
                 accuracy=accuracy,
                 skeleton_code=SFTUtil.open_discovery_skeleton_code,
@@ -5181,8 +5227,12 @@ def load_rl_dataset(tokenizer):
                 legacy_patterns=legacy_patterns,
                 goal_name=profile["name"],
                 target_tags=", ".join(profile["tags"]),
+                target_pattern=target_pattern,
                 design_brief=profile["brief"],
-                module_hints=", ".join(profile["module_hints"]),
+                module_hints=", ".join(module_hints),
+                block_signature=PROMPT_BLOCK_SIGNATURE,
+                init_signature=PROMPT_INIT_SIGNATURE,
+                forward_signature=PROMPT_FORWARD_SIGNATURE,
             )
 
             messages = [{"role": "user", "content": user_prompt}]

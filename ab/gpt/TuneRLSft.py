@@ -1260,6 +1260,7 @@ class DynamicSFTPromptDataset(TorchDataset):
 
     def _render_prompt(self, row: Dict[str, Any]) -> str:
         profile = SFTUtil.open_discovery_goal_profiles[int(row["goal_profile_id"])]
+        target_pattern = SFTUtil.goal_profile_target_pattern(profile)
         module_hints = (
             "self.backbone_a",
             "self.backbone_b",
@@ -1272,6 +1273,7 @@ class DynamicSFTPromptDataset(TorchDataset):
             legacy_patterns=", ".join(SFTUtil.legacy_patterns),
             goal_name=profile["name"],
             target_tags=", ".join(profile["tags"]),
+            target_pattern=target_pattern,
             design_brief=profile["brief"],
             module_hints=", ".join(module_hints),
             block_signature=self.block_signature,

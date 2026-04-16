@@ -1604,6 +1604,11 @@ def run_sft_training():
         model.enable_input_require_grads()
     except Exception:
         pass
+    gc_patch_stats = TuneRL.enforce_non_reentrant_gradient_checkpointing(model)
+    print(
+        "[SFT RL] Gradient checkpointing enforcement: "
+        f"roots={gc_patch_stats['roots']} modules={gc_patch_stats['modules']} use_reentrant=False"
+    )
     model.print_trainable_parameters()
     TuneRL.active_rl_model = model
     TuneRL.active_rl_tokenizer = tokenizer
@@ -1613,6 +1618,11 @@ def run_sft_training():
         train_dataset=rl_dataset,
         reward_funcs=TuneRL.compute_reward,
         args=grpo_config,
+    )
+    trainer_gc_patch_stats = TuneRL.enforce_non_reentrant_gradient_checkpointing(trainer.model)
+    print(
+        "[SFT RL] Trainer gradient checkpointing enforcement: "
+        f"roots={trainer_gc_patch_stats['roots']} modules={trainer_gc_patch_stats['modules']} use_reentrant=False"
     )
     if trainer_checkpoint_supported:
         # Keep legacy reward_state.json in trainer checkpoints so old resumes still work.

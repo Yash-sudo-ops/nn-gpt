@@ -1376,6 +1376,8 @@ def _build_sft_grpo_config(
         "gradient_checkpointing": True,
         "num_generations": runtime_settings["global_num_generations"],
     }
+    if "gradient_checkpointing_kwargs" in signature_parameters:
+        config_kwargs["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
     if "save_strategy" in signature_parameters:
         config_kwargs["save_strategy"] = "steps"
     if "save_steps" in signature_parameters:

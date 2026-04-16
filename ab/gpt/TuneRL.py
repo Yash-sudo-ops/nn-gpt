@@ -10,7 +10,6 @@ import subprocess
 import sys
 import threading
 import time
-import traceback
 import warnings
 
 
@@ -63,54 +62,6 @@ def _install_rl_runtime_noise_filters() -> None:
 
 
 _install_rl_runtime_noise_filters()
-
-
-_CHECKPOINT_WARNING_TEXT = "None of the inputs have requires_grad=True. Gradients will be None"
-
-
-def _install_checkpoint_warning_probe() -> None:
-    if getattr(_install_checkpoint_warning_probe, "_installed", False):
-        return
-    mode = os.getenv("NNGPT_CHECKPOINT_WARNING_MODE", "").strip().lower()
-    if not mode:
-        _install_checkpoint_warning_probe._installed = True
-        return
-
-    if mode == "error":
-        warnings.filterwarnings(
-            "error",
-            message=rf".*{re.escape(_CHECKPOINT_WARNING_TEXT)}.*",
-            category=UserWarning,
-            module=r"torch\.utils\.checkpoint",
-        )
-        _install_checkpoint_warning_probe._installed = True
-        return
-
-    if mode in {"trace", "trace_once"}:
-        original_showwarning = warnings.showwarning
-        seen_messages: set[str] = set()
-
-        def _showwarning(message, category, filename, lineno, file=None, line=None):
-            text = str(message)
-            if (
-                issubclass(category, UserWarning)
-                and _CHECKPOINT_WARNING_TEXT in text
-            ):
-                if mode == "trace" or text not in seen_messages:
-                    seen_messages.add(text)
-                    stream = file if file is not None else sys.stderr
-                    stream.write(
-                        "[Checkpoint Warning Probe] Captured requires_grad warning.\n"
-                    )
-                    traceback.print_stack(file=stream)
-            return original_showwarning(message, category, filename, lineno, file=file, line=line)
-
-        warnings.showwarning = _showwarning
-
-    _install_checkpoint_warning_probe._installed = True
-
-
-_install_checkpoint_warning_probe()
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments
@@ -891,6 +842,8 @@ def _build_rl_grpo_config(
         "gradient_checkpointing": True,
         "num_generations": runtime_settings["global_num_generations"],
     }
+    if "gradient_checkpointing_kwargs" in config_signature.parameters:
+        config_kwargs["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
     explicit_kl_coef = env_float("NNGPT_RL_KL_COEF", RL_STAGE_KL_COEF)
     if "beta" in config_signature.parameters:
         config_kwargs["beta"] = explicit_kl_coef

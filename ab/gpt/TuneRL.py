@@ -5399,8 +5399,13 @@ def main():
     align_generation_head_dtype(model, precision["torch_dtype"])
 
     # Enable gradient checkpointing to save memory
-    model.gradient_checkpointing_enable()
-    model.enable_input_require_grads() 
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False}
+    )
+    try:
+        model.enable_input_require_grads()
+    except Exception:
+        pass
 
     model.print_trainable_parameters()
     active_rl_model = model

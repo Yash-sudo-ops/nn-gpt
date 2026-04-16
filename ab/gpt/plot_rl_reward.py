@@ -888,7 +888,15 @@ def _print_summary(
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log-dir", required=True, help="Directory containing reward logs")
-    parser.add_argument("--output", help="Output image path. Defaults to <log-dir>/reward_dashboard.png")
+    parser.add_argument(
+        "--output",
+        help="Output image path. Defaults to <log-dir>/reward_dashboard_actual_only.png",
+    )
+    parser.add_argument(
+        "--write-stage-overlay",
+        action="store_true",
+        help="Also write the target-overlay dashboard for debugging.",
+    )
     parser.add_argument("--window", type=int, default=20, help="Rolling mean window")
     args = parser.parse_args(argv)
 
@@ -896,28 +904,33 @@ def main(argv: Optional[list[str]] = None) -> int:
     data = load_reward_log(log_dir)
     summary = compute_summary(data, window=max(1, int(args.window)))
     stage_summary = compute_stage_summary(data)
-    output_path = Path(args.output).expanduser().resolve() if args.output else (log_dir / "reward_dashboard.png")
-    stage_overlay_path = log_dir / "reward_dashboard_stage_overlay.png"
-    actual_only_path = log_dir / "reward_dashboard_actual_only.png"
+    output_path = (
+        Path(args.output).expanduser().resolve()
+        if args.output
+        else (log_dir / "reward_dashboard_actual_only.png")
+    )
+    stage_overlay_path = log_dir / "reward_dashboard_stage_overlay.png" if args.write_stage_overlay else None
     try:
-        _plot_dashboard(data, summary, output_path=output_path, window=max(1, int(args.window)))
-        if stage_overlay_path != output_path:
+        _plot_dashboard(
+            data,
+            summary,
+            output_path=output_path,
+            window=max(1, int(args.window)),
+            show_target=False,
+        )
+        if stage_overlay_path is not None and stage_overlay_path != output_path:
             _plot_dashboard(data, summary, output_path=stage_overlay_path, window=max(1, int(args.window)))
-        if actual_only_path != output_path and actual_only_path != stage_overlay_path:
-            _plot_dashboard(data, summary, output_path=actual_only_path, window=max(1, int(args.window)), show_target=False)
     except ModuleNotFoundError as exc:
         if str(exc.name) != "matplotlib":
             raise
         _write_placeholder_png(output_path)
-        if stage_overlay_path != output_path:
+        if stage_overlay_path is not None and stage_overlay_path != output_path:
             _write_placeholder_png(stage_overlay_path)
-        if actual_only_path != output_path and actual_only_path != stage_overlay_path:
-            _write_placeholder_png(actual_only_path)
         print("matplotlib not available; wrote placeholder PNG outputs instead")
     _write_stage_summary(log_dir / "stage_summary.json", stage_summary)
     _print_summary(data, summary, log_dir=log_dir, output_path=output_path, stage_summary=stage_summary)
-    if actual_only_path != output_path and actual_only_path != stage_overlay_path:
-        print(f"Saved actual-only dashboard to: {actual_only_path}")
+    if stage_overlay_path is not None and stage_overlay_path != output_path:
+        print(f"Saved stage-overlay dashboard to: {stage_overlay_path}")
     return 0
 
 

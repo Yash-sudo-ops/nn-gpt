@@ -1595,8 +1595,13 @@ def run_sft_training():
         model = TuneRL.get_peft_model(model, peft_config)
     TuneRL.align_generation_head_dtype(model, precision["torch_dtype"])
 
-    model.gradient_checkpointing_enable()
-    model.enable_input_require_grads()
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False}
+    )
+    try:
+        model.enable_input_require_grads()
+    except Exception:
+        pass
     model.print_trainable_parameters()
     TuneRL.active_rl_model = model
     TuneRL.active_rl_tokenizer = tokenizer

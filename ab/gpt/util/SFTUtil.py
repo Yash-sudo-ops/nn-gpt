@@ -310,30 +310,27 @@ open_discovery_skeleton_code = skeleton_code
 
 compact_backbone_rl_prompt_template = """
 ### Role & Goal
-You are a Senior AI Architect. Implement one specific dual-backbone model that aims to improve image-classification accuracy.
+You are a Senior AI Architect. Produce one trainable dual-backbone image-classification architecture that improves accuracy.
 
 ### Task Context
-- Target Pattern: `{target_pattern}`
 - Optimization Track: {goal_name}
 - Target Tags: {target_tags}
 - Design Brief: {design_brief}
 - Seed Accuracy: `{accuracy}` (context only)
-- Reference Patterns: [{legacy_patterns}]
 
 [CODE SKELETON START]
 {skeleton_code}
 [CODE SKELETON END]
 
-### Hard Requirements
+### Basic Requirements
 1. Output ONLY `<block>`, `<init>`, `<forward>`. No markdown, no explanation, no extra text.
 2. Implement only `drop_conv3x3_block`, `Net.__init__`, and `Net.forward`.
 3. Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b` from [{available_backbones}].
-4. Set `self.pattern = '{target_pattern}'` inside `__init__`.
-5. In `__init__`, set `self.device = device`, `self.use_amp = torch.cuda.is_available()`, `self._input_spec = tuple(in_shape[1:])`, then call `self.infer_dimensions_dynamically(out_shape[0])`.
-6. Build a direct computation graph. Do not use `if self.pattern`, dynamic wrapper logic, extra `import` lines, or extra classes.
-7. Improve accuracy through visible structure such as {module_hints}. Avoid dead modules and the plain one-shot classifier-only fuse.
-8. Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs, and return classifier logits.
-9. Do not reference undefined names, do not break tensor dimensions, and do not rename `infer_dimensions_dynamically`.
+4. In `__init__`, set `self.pattern` to a concise descriptive name, set `self.device = device`, `self.use_amp = torch.cuda.is_available()`, `self._input_spec = tuple(in_shape[1:])`, then call `self.infer_dimensions_dynamically(out_shape[0])`.
+5. Keep `forward` as a direct computation graph. Do not use `if self.pattern`, extra `import` lines, extra classes, or dynamic wrapper logic.
+6. Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs, and return classifier logits.
+7. Do not call `infer_dimensions(...)`, do not rename `infer_dimensions_dynamically`, and do not reference undefined names such as `dropout_prob`, `in_channels`, or `features`.
+8. Improve accuracy through visible structure such as {module_hints}. Avoid dead modules and the plain one-shot classifier-only fuse.
 
 ### Output Requirement (STRICT)
 Read the optimization feedback below, then write the final XML answer. The final answer must begin with `<block>` and end with `</forward>`.

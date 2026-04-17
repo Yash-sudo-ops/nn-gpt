@@ -1319,6 +1319,27 @@ def _ast_call_target_name(node: ast.Call) -> Optional[str]:
     return None
 
 
+def _ast_subscript_index(node: ast.Subscript) -> Optional[ast.AST]:
+    slice_node = getattr(node, "slice", None)
+    if hasattr(ast, "Index") and isinstance(slice_node, ast.Index):
+        return slice_node.value
+    return slice_node
+
+
+def _is_exact_out_shape_zero_expr(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Subscript):
+        return False
+    target = getattr(node, "value", None)
+    if not isinstance(target, ast.Name) or str(target.id) != "out_shape":
+        return False
+    index_node = _ast_subscript_index(node)
+    if isinstance(index_node, ast.Constant):
+        return index_node.value == 0
+    if hasattr(ast, "Num") and isinstance(index_node, ast.Num):
+        return index_node.n == 0
+    return False
+
+
 def _cpu_prevalidate_reward_code(
     code: str,
     *,
@@ -1340,6 +1361,7 @@ def _cpu_prevalidate_reward_code(
         infer_dimensions_calls = 0
         infer_dimensions_dynamically_calls = 0
         bad_dynamic_arg_count = None
+        exact_dynamic_call_count = 0
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -1351,6 +1373,10 @@ def _cpu_prevalidate_reward_code(
                 explicit_arg_count = len(getattr(node, "args", [])) + len(getattr(node, "keywords", []))
                 if explicit_arg_count != 1 and bad_dynamic_arg_count is None:
                     bad_dynamic_arg_count = explicit_arg_count
+                elif len(getattr(node, "keywords", [])) == 0:
+                    args = list(getattr(node, "args", []))
+                    if len(args) == 1 and _is_exact_out_shape_zero_expr(args[0]):
+                        exact_dynamic_call_count += 1
 
         if infer_dimensions_calls > 0:
             error_type = "AttributeError"
@@ -1361,7 +1387,7 @@ def _cpu_prevalidate_reward_code(
                 "TypeError: Net.infer_dimensions_dynamically() takes 2 positional arguments "
                 f"but {bad_dynamic_arg_count + 1} were given"
             )
-        elif infer_dimensions_dynamically_calls <= 0:
+        elif infer_dimensions_dynamically_calls <= 0 or exact_dynamic_call_count != 1:
             error_type = "RuntimeError"
             error_message = "RuntimeError: Net.__init__ must call self.infer_dimensions_dynamically(out_shape[0])"
         elif not bool(code_trace.get("assigns_input_spec")):

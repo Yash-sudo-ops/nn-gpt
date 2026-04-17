@@ -1275,6 +1275,7 @@ class DynamicSFTPromptDataset(TorchDataset):
             target_tags=", ".join(profile["tags"]),
             target_pattern=target_pattern,
             design_brief=profile["brief"],
+            tag_realization=profile.get("realization", profile["brief"]),
             module_hints=", ".join(module_hints),
             block_signature=self.block_signature,
             init_signature=self.init_signature,

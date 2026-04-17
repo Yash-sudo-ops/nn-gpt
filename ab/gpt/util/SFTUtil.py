@@ -322,6 +322,7 @@ You are a Senior AI Architect. Produce one trainable dual-backbone image-classif
 - Optimization Target Tags: {target_tags}
 - Design Brief: {design_brief}
 - Goal Tag Realization: {tag_realization}
+- Hitting only one target tag is still off-target. Make at least two target tags visible in the parsed graph.
 - Seed Accuracy: `{accuracy}` (context only)
 
 [CODE SKELETON START]
@@ -332,7 +333,7 @@ You are a Senior AI Architect. Produce one trainable dual-backbone image-classif
 1. Output ONLY `<block>`, `<init>`, `<forward>`. No markdown, no explanation, no extra text.
 2. Implement only `drop_conv3x3_block`, `Net.__init__`, and `Net.forward`.
 3. Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b` from [{available_backbones}].
-4. In `__init__`, follow this minimal order: call `super().__init__()`, set `self.pattern`, `self.device`, `self.use_amp`, and `self._input_spec = tuple(in_shape[1:])`, define the modules used by `forward`, then call `self.infer_dimensions_dynamically(out_shape[0])` exactly once after the modules are defined.
+4. In `__init__`, follow this minimal order: call `super().__init__()`, set `self.pattern`, `self.device`, `self.use_amp`, and `self._input_spec = tuple(in_shape[1:])`, define the modules used by `forward`, then call `self.infer_dimensions_dynamically(out_shape[0])` exactly once after the modules are defined. Use that exact call line.
 5. Treat the fixed infrastructure as read-only. Do not rewrite helper APIs or add replacement dimension-inference helpers.
 6. Keep `forward` as a direct computation graph. Do not use `if self.pattern`, extra `import` lines, extra classes, or dynamic wrapper logic.
 7. Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs, and return classifier logits.

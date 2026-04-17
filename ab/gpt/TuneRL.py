@@ -271,6 +271,7 @@ STAGE1_DISCOVERY_FAMILY_BONUS = 0.42
 STAGE1_DISCOVERY_GRAPH_BONUS = 0.20
 STAGE1_STATIC_BASE_SCORE = 0.02
 STAGE1_GOAL_MATCH_SCALE = 0.10
+STAGE1_DISCOVERY_MIN_GOAL_HIT_RATE = 2.0 / 3.0
 STAGE1_ZERO_GOAL_HIT_PENALTY = -0.18
 STAGE1_LOW_GOAL_HIT_PENALTY = -0.08
 STAGE1_STRUCTURE_GROUP_SCALE = 1.45
@@ -293,7 +294,7 @@ STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_MAX_PENALTY = -0.18
 STAGE1_GRAPH_BATCH_REPEAT_STEP_PENALTY = -0.12
 STAGE1_GRAPH_BATCH_REPEAT_MAX_PENALTY = -0.36
 STAGE1_ZERO_GOAL_HIT_REWARD_CAP = 0.12
-STAGE1_LOW_GOAL_HIT_REWARD_CAP = 0.16
+STAGE1_LOW_GOAL_HIT_REWARD_CAP = 0.14
 STAGE1_PLAIN_PARALLEL_REWARD_CAP = 0.14
 STAGE23_DESCRIPTOR_BATCH_UNIQUE_BONUS = 0.03
 STAGE23_DESCRIPTOR_ARCHIVE_NOVEL_BONUS = 0.02
@@ -4043,13 +4044,13 @@ def base_discovery_reward_fn(
                     STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_STEP_PENALTY * float(archive_snapshot_descriptor_freq - 1),
                 )
                 r_no_progress_penalty += descriptor_archive_repeat_penalty
-            if discovery_candidate and goal_alignment_scale > 0.0:
+            if discovery_candidate and goal_alignment_scale >= STAGE1_DISCOVERY_MIN_GOAL_HIT_RATE:
                 r_goal_best = (
                     STAGE1_DISCOVERY_FAMILY_BONUS
                     * novelty_scale
                     * max(0.35, goal_alignment_scale)
                 )
-            elif novel_vs_trainset_graph and goal_alignment_scale > 0.0:
+            elif novel_vs_trainset_graph and goal_alignment_scale >= STAGE1_DISCOVERY_MIN_GOAL_HIT_RATE:
                 r_goal_best = (
                     STAGE1_DISCOVERY_GRAPH_BONUS
                     * novelty_scale

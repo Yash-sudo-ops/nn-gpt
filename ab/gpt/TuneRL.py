@@ -3000,7 +3000,11 @@ def bootstrap_trainset_reference_library(data) -> None:
 def extract_prompt_goal_tags(prompt_text: str) -> List[str]:
     if not prompt_text:
         return []
-    match = re.search(r"(?:Discovery|Optimization) Target Tags:\s*([A-Za-z0-9_, \-]+)", prompt_text)
+    match = re.search(
+        r"(?:^|\n)\s*(?:-\s*)?(?:(?:Discovery|Optimization)\s+)?Target Tags:\s*([A-Za-z0-9_, \-]+)",
+        prompt_text,
+        flags=re.IGNORECASE,
+    )
     if not match:
         return []
     return [tag.strip() for tag in match.group(1).split(",") if tag.strip()]

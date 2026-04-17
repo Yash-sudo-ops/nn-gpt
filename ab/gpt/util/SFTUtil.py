@@ -314,7 +314,7 @@ You are a Senior AI Architect. Produce one trainable dual-backbone image-classif
 
 ### Task Context
 - Optimization Track: {goal_name}
-- Target Tags: {target_tags}
+- Optimization Target Tags: {target_tags}
 - Design Brief: {design_brief}
 - Seed Accuracy: `{accuracy}` (context only)
 
@@ -326,7 +326,7 @@ You are a Senior AI Architect. Produce one trainable dual-backbone image-classif
 1. Output ONLY `<block>`, `<init>`, `<forward>`. No markdown, no explanation, no extra text.
 2. Implement only `drop_conv3x3_block`, `Net.__init__`, and `Net.forward`.
 3. Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b` from [{available_backbones}].
-4. In `__init__`, set `self.pattern`, `self.device`, `self.use_amp`, and `self._input_spec`, then finish the provided classifier-sizing setup by using the existing `infer_dimensions_dynamically` helper once with the class count from `out_shape`.
+4. In `__init__`, follow this minimal order: call `super().__init__()`, set `self.pattern` / `self.device` / `self.use_amp` / `self._input_spec`, define the modules used by `forward`, then finish the provided classifier-sizing setup by calling the existing `infer_dimensions_dynamically` helper once with only the class count from `out_shape`.
 5. Treat the fixed infrastructure as read-only. Do not rewrite helper APIs or add replacement dimension-inference helpers.
 6. Keep `forward` as a direct computation graph. Do not use `if self.pattern`, extra `import` lines, extra classes, or dynamic wrapper logic.
 7. Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs, and return classifier logits.

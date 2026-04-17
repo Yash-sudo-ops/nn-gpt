@@ -39,7 +39,8 @@ class LLM:
         
         # ===== Unsloth Fast Path =====
         if use_unsloth:
-            self.model, self.tokenizer = FastModel.from_pretrained(
+            from unsloth import FastLanguageModel
+            self.model, self.tokenizer = FastLanguageModel.from_pretrained(
                 model_name=model_path,
                 dtype = None,
                 max_seq_length=context_length or 4096,
@@ -57,6 +58,7 @@ class LLM:
         # ===== Original HuggingFace Path =====
         # --- Tokenizer ---
         tok_fl_nm = llm_tokenizer_dir(base_path, model_path)
+        
         raw_fl_nm = llm_dir(base_path, model_path)
         tokenizer_exists = exists(tok_fl_nm)
 

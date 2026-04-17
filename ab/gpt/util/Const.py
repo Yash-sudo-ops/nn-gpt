@@ -1,7 +1,7 @@
 from ab.nn.util.Const import base_module, ab_root_path, out_dir
 import json
 
-NN_TRAIN_EPOCHS = 1  # How many epochs to train the altered NN for evaluation
+NN_TRAIN_EPOCHS = 1# How many epochs to train the altered NN for evaluation
 
 new_nn_file = 'new_nn.py'
 hp_file = 'hp.txt'

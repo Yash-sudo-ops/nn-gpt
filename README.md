@@ -9,6 +9,52 @@ short alias  <a href='https://pypi.python.org/pypi/lmurg'>lmurg</a>
 
 This Python-based <a href='https://github.com/ABrain-One/nn-gpt'>NNGPT</a> project leverages large language models (LLMs) to automate the creation of neural network architectures, streamlining the design process for machine learning practitioners. It leverages various neural networks from the <a href="https://github.com/ABrain-One/nn-dataset">LEMUR Dataset</a> to fine-tune LLMs and provide insights into potential architectures during the creation of new neural network models.
 
+## LangGraph Multi-Agent Workflow
+
+NNGPT supports an optional LangGraph-based multi-agent orchestration mode. The agent system integrates directly inside `tune()` — no separate entry point, no duplicated logic.
+
+### Design Principle
+
+All pipeline logic remains in `ab/gpt/util/Tune.py` as the **single source of truth**. Agent nodes are thin wrappers only — they read from state and call the existing functions. No logic is reimplemented inside any agent file.
+
+### Agent Flow
+
+The professor-specified flow is: **Finetuner → Generator → Evaluator → Predictor**
+
+
+- **manager** — controls routing, checks epoch stop condition, decides next node
+- **generator** — calls `nn_gen()` / `trans_gen()`; skips if epoch < skip_epoch; skips evaluator if no code generated
+- **evaluator** — calls `_evaluate_epoch()`; stores accuracy and all predictor inputs in state
+- **finetuner** — calls `_finetune_epoch()`; increments epoch counter, returns to manager
+- **predictor** — optional; activates after epoch 1 and epoch 2 accuracies are both available
+
+Any future improvement to `nn_gen()`, `trans_gen()`, `_evaluate_epoch()`, or `_finetune_epoch()` automatically applies to both classic and agent modes.
+
+### Crash Recovery
+
+Agent mode uses LangGraph `MemorySaver` checkpointing. If the pipeline crashes mid-epoch (e.g. GPU OOM), re-running with the same `nn_name_prefix` resumes from the last completed node — no restart from epoch 0.
+
+### Usage
+
+The agent mode is enabled by default.
+
+To use the accuracy predictor agent:
+
+```bash
+python -m ab.gpt.TuneNNGen --use_predictor
+```
+
+### Agent Files
+
+| File | Purpose |
+|---|---|
+| `ab/gpt/agents/run_agent.py` | Builds and runs the LangGraph StateGraph |
+| `ab/gpt/agents/manager.py` | Routing logic and epoch stop condition |
+| `ab/gpt/agents/predictor.py` | Optional accuracy prediction node |
+| `ab/gpt/agents/state.py` | Shared `AgentState` TypedDict — field names match LEMUR DB columns |
+| `ab/gpt/util/Tune.py` | Single source of truth: `nn_gen`, `trans_gen`, `_evaluate_epoch`, `_finetune_epoch`, `generate_step`, `evaluate_step`, `finetune_step` |
+| `ab/gpt/util/AccPredictor.py` | Accuracy predictor interface (to be implemented) |
+
 ## Create and Activate a Virtual Environment (recommended)
 For Linux/Mac:
    ```bash
@@ -74,7 +120,7 @@ python -m ab.stat.export
 
 - **`ab.gpt.TuneNNGen*.py`** – Performs fine-tuning and evaluation of an LLM. For evaluation purposes, the LLM generates neural network models, which are then trained to assess improvements in the LLM’s performance on this task. The -s flag allows skipping model generation for the specified number of epochs.
 
-<a href='https://huggingface.co/ABrain'><strong>Pretrained LLM weights</strong></a>
+<a href='https://huggingface.co/ABrain'><strong>Fine-tuned LLMs</strong></a>
 
 ### 🐳 Docker
 All versions of this project are compatible with <a href='https://hub.docker.com/r/abrainone/ai-linux' target='_blank'>AI Linux</a> and can be seamlessly executed within the AI Linux Docker container.
@@ -96,26 +142,24 @@ If recently added dependencies are missing in the <a href='https://hub.docker.co
 The original version of this project was created at the Computer Vision Laboratory of the University of Würzburg by the authors mentioned below. If you find this project to be useful for your research, please consider citing our articles for <a target='_blank' href='https://arxiv.org/pdf/2511.20333'>NNGPT</a>, <a target='_blank' href='https://arxiv.org/pdf/2601.02997'>architecture design</a> and <a target='_blank' href='https://openaccess.thecvf.com/content/ICCV2025W/AIM/papers/Kochnev_Optuna_vs_Code_Llama_Are_LLMs_a_New_Paradigm_for_ICCVW_2025_paper.pdf'>hyperparameter tuning</a> with LLMs:
 ```bibtex
 
-@article{ABrain.NNGPT,
-	title        = {NNGPT: Rethinking AutoML with Large Language Models},
-	author       = {Kochnev, Roman and Khalid, Waleed and Uzun, Tolgay Atinc and Zhang, Xi and Dhameliya, Yashkumar Sanjaybhai and Qin, Furui and Vysyaraju, Chandini and Duvvuri, Raghuvir and Goyal, Avi and Ignatov, Dmitry and Timofte, Radu},
-	journal = {arXiv preprint},
-  	volume  = {arXiv:2511.2033},
-  	url = {https://arxiv.org/pdf/2511.2033},
-	year = {2025}
+@InProceedings{ABrain.NNGPT,
+	title = {{NNGPT}: Rethinking {AutoML} with Large Language Models},
+	author = {Kochnev, Roman and Khalid, Waleed and Uzun, Tolgay Atinc and Zhang, Xi and Dhameliya, Yashkumar Sanjaybhai and Qin, Furui and Vysyaraju, Chandini and Duvvuri, Raghuvir and Goyal, Avi and Ignatov, Dmitry and Timofte, Radu},
+	booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops (CVPRW)},	
+	year={2026},
+    note={to appear}
 }
 
-@article{ABrain.Architect,
-	title={From Memorization to Creativity: LLM as a Designer of Novel Neural-Architectures},
+@InProceedings{ABrain.Architect,
+	title={From Memorization to Creativity: {LLM} as a Designer of Novel Neural Architectures},
 	author={Khalid, Waleed and Ignatov, Dmitry and Timofte, Radu},
-	journal={arXiv preprint},
-	volume  = {arXiv:2601.02997},
-	url = {https://arxiv.org/pdf/2601.02997}, 
-	year={2026}
+	booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops (CVPRW)},	
+	year={2026},
+    note={to appear}
 }
 
 @InProceedings{ABrain.HPGPT,
-	title={{Optuna vs Code Llama: Are LLMs a New Paradigm for Hyperparameter Tuning?}},
+	title={Optuna vs Code Llama: Are {LLMs} a New Paradigm for Hyperparameter Tuning?},
 	author={Kochnev, Roman and Goodarzi, Arash Torabi and Bentyn, Zofia Antonina and Ignatov, Dmitry and Timofte, Radu},
 	booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision Workshops (ICCVW)},
 	url={https://openaccess.thecvf.com/content/ICCV2025W/AIM/papers/Kochnev_Optuna_vs_Code_Llama_Are_LLMs_a_New_Paradigm_for_ICCVW_2025_paper.pdf},

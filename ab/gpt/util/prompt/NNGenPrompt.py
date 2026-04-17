@@ -6,8 +6,13 @@ from pandas import DataFrame
 from transformers import PreTrainedTokenizerBase
 from overrides import override
 from tqdm import tqdm
+<<<<<<< HEAD
 from ab.gpt.util.prompt.Prompt import Prompt
 import ab.nn.api as lemur
+=======
+
+from ab.nn.util.db.Query import JoinConf
+>>>>>>> 9720e9a479988a293869e5fe8627a684754f11d7
 
 
 def evaluate_delimited_formulas(text: str, para_dict: dict) -> str:
@@ -70,15 +75,19 @@ class NNGenPrompt(Prompt):
         with open(self.prompts_path) as prompt_file:
             prompt_dict = json.load(prompt_file)
         assert isinstance(prompt_dict, dict)
+<<<<<<< HEAD
 
         print("\n" + "=" * 60)
         print("GENERAL FORMULA EXTRACTOR ENABLED")
         print("Pattern: << formula >> will be evaluated")
         print("=" * 60 + "\n")
+=======
+>>>>>>> 9720e9a479988a293869e5fe8627a684754f11d7
 
         for key in prompt_dict.keys():
             dataframe = DataFrame(columns=['instruction', 'context', 'response', 'category', 'text'])
             prompt_lists.append(dataframe)
+<<<<<<< HEAD
 
             prompt_template = '\n'.join(prompt_dict[key]['prompt'])
             print(f'Preparing Data for key: {key}...', flush=True)
@@ -164,6 +173,105 @@ class NNGenPrompt(Prompt):
                 text = self.tokenizer.apply_chat_template(
                     [{'role': 'user', 'content': inst}, {'role': 'assistant', 'content': response}],
                     tokenize=False)
+=======
+            prompt = '\n'.join(prompt_dict[key]['prompt'])
+            print('Preparing Data...', flush=True)
+            key_dict = prompt_dict[key]
+            num_joint_nns = key_dict.get('num_joint_nns') or 1
+
+            # For JOIN queries, do NOT pass max_rows — the LIMIT applies before
+            # the JOIN and causes an O(n²) correlated scan. Slice the result after.
+            use_join = num_joint_nns >= 2
+            # For JOIN queries, cap rows to avoid O(n²) scan on the temp table.
+            # Slice to n_training_prompts after the fact instead of relying on LIMIT inside the JOIN.
+            join_cap = 1000
+            data = lemur.data(
+                only_best_accuracy=only_best_accuracy,
+                task=key_dict.get('task'),
+                nn_prefixes=tuple(key_dict.get('nn_prefixes')),
+                max_rows=join_cap if use_join else n_training_prompts,
+                sql=None if not use_join else JoinConf(
+                    num_joint_nns=num_joint_nns,
+                    same_columns=tuple(key_dict.get('keep_same', [])),
+                    diff_columns=tuple(key_dict.get('no_repeat', [])),
+                    enhance_nn=key_dict.get('improve', False)
+                )
+            )
+
+            print('Data acquisition complete', flush=True)
+
+            # Check if this is delta mode
+            use_delta = key_dict.get('use_delta', False) or 'delta' in key.lower()
+
+            for _, row in tqdm(data.iterrows(), total=n_training_prompts or len(data)):
+                # print(f'Row keys: {list(row.index)}', flush=True)
+                if n_training_prompts and len(dataframe) >= n_training_prompts:
+                    break
+                para_dict = dict()
+                for it in prompt_dict[key]['input_list']:
+                    para_dict[it['para']] = row[it['value']]
+
+                nn_code_max_chars = key_dict.get('nn_code_max_chars')
+                if nn_code_max_chars and 'nn_code' in para_dict and isinstance(para_dict['nn_code'], str):
+                    para_dict['nn_code'] = para_dict['nn_code'][:nn_code_max_chars]
+
+                # Inject columns referenced in the output template but absent from input_list
+                # (e.g. better_dataset for classification tasks). Only applies when output_type
+                # is 'classification' so other tasks are unaffected.
+                if key_dict.get('output_type') == 'classification':
+                    output_template = '\n'.join(key_dict['output'])
+                    for col in row.index:
+                        if f'{{{col}}}' in output_template and col not in para_dict:
+                            para_dict[col] = row[col]
+
+                inst = prompt.format(**para_dict)
+
+                # Compute delta if delta mode is enabled
+                if use_delta and 'addon_nn_code' in para_dict and 'nn_code' in para_dict:
+                    try:
+                        from ab.gpt.util.DeltaUtil import compute_delta
+                        baseline_code = para_dict.get('nn_code', '')
+                        improved_code = para_dict.get('addon_nn_code', '')
+
+                        if baseline_code and improved_code:
+                            computed_delta = compute_delta(baseline_code, improved_code)
+                            if not computed_delta:
+                                computed_delta = ""
+                        else:
+                            computed_delta = ""
+
+                        output = '\n'.join(prompt_dict[key]['output'])
+                        try:
+                            response = output.format(**para_dict)
+                        except KeyError:
+                            response = output
+                            for k, v in para_dict.items():
+                                response = response.replace(f'{{{k}}}', str(v))
+                        response = response.replace('{computed_delta}', computed_delta)
+                    except Exception as e:
+                        print(f'[WARNING] Failed to compute delta for key {key}: {e}. Using regular output.', flush=True)
+                        output = '\n'.join(prompt_dict[key]['output'])
+                        try:
+                            response = output.format(**para_dict)
+                        except KeyError:
+                            response = output
+                            for k, v in para_dict.items():
+                                response = response.replace(f'{{{k}}}', str(v))
+                        response = response.replace('{computed_delta}', '')
+                else:
+                    # Regular mode: use output template as-is
+                    output = '\n'.join(prompt_dict[key]['output'])
+                    response = output.format(**para_dict)
+
+                text = self.tokenizer.apply_chat_template(
+                    [
+                        {'role': 'user', 'content': inst},
+                        {'role': 'assistant', 'content': response}
+                    ], tokenize=False)
+
+                # print(f"Prompt: {inst}", flush=True)
+                # print(f"Output: {response}", flush=True)
+>>>>>>> 9720e9a479988a293869e5fe8627a684754f11d7
 
                 dataframe.loc[len(dataframe)] = [inst, "", response, "", text]
 

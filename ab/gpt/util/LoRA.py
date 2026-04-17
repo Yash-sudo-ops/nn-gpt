@@ -1,7 +1,11 @@
 from os import makedirs
+import inspect
+from pathlib import Path
+from typing import Optional
 
 import torch
 from ab.nn.util.Util import release_memory
+import ab.gpt.util.training_runtime as TrainingRuntime
 from datasets import Dataset
 from peft import (
     LoraConfig,
@@ -147,7 +151,17 @@ class LoRA:
         print("[LoRA] Trainable parameter summary:")
         print_trainable_parameters(self.peft_model)
 
-    def train(self, dataset: Dataset, tokenizer, output_dir: str, train_on_completions_only=False, response_template=None):
+    def train(
+        self,
+        dataset: Dataset,
+        tokenizer,
+        output_dir: str,
+        train_on_completions_only=False,
+        response_template=None,
+        resume_from_checkpoint: Optional[str] = None,
+        runtime_state_hooks: Optional[TrainingRuntime.RuntimeStateHooks] = None,
+        checkpoint_label: str = "trainer",
+    ):
         """
         Train the model using SFTTrainer.
         
@@ -303,10 +317,34 @@ class LoRA:
             print(k, v, v / total)
         do_train = True
 
+        if runtime_state_hooks is not None:
+            # Pipelines opt into runtime state persistence; LoRA only wires the shared contract.
+            TrainingRuntime.restore_or_reset_runtime_state(
+                Path(resume_from_checkpoint).expanduser().resolve() if resume_from_checkpoint else None,
+                runtime_state_hooks,
+            )
+            runtime_callback = TrainingRuntime.build_trainer_checkpoint_callback(runtime_state_hooks)
+            if runtime_callback is not None:
+                trainer.add_callback(runtime_callback)
+
         # starting training
         print("Training...")
         if do_train:
-            train_result = trainer.train()
+            if resume_from_checkpoint:
+                # Trainer resume is separate from runtime state restore and remains an explicit one-shot input.
+                resolved_resume_checkpoint = Path(resume_from_checkpoint).expanduser().resolve()
+                if not resolved_resume_checkpoint.exists():
+                    raise FileNotFoundError(
+                        f"{checkpoint_label.capitalize()} resume checkpoint not found: {resolved_resume_checkpoint}"
+                    )
+                train_signature = inspect.signature(trainer.train)
+                if "resume_from_checkpoint" not in train_signature.parameters:
+                    raise RuntimeError(
+                        f"Installed trainer does not support resume_from_checkpoint for {checkpoint_label} resume."
+                    )
+                train_result = trainer.train(resume_from_checkpoint=str(resolved_resume_checkpoint))
+            else:
+                train_result = trainer.train()
             metrics = train_result.metrics
             trainer.log_metrics(split="train", metrics=metrics)
             trainer.save_metrics(split="train", metrics=metrics)

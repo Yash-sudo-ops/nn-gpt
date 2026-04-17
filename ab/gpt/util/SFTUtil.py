@@ -70,6 +70,24 @@ def goal_profile_target_pattern(profile_or_name) -> str:
         return "Dual_Backbone_Custom"
     return goal_profile_target_patterns.get(profile_name, profile_name)
 
+
+def goal_tag_parser_cues(tags) -> str:
+    cues = []
+    for tag in tuple(tags or ()):
+        if tag == "stem":
+            cues.append("- `stem`: apply a visible stem module before any branch split; do not let both backbones read the raw input directly.")
+        elif tag == "project":
+            cues.append("- `project`: include an explicit project or bridge module call in `forward`, not just the final classifier.")
+        elif tag == "multi_stage":
+            cues.append("- `multi_stage`: show at least two visible stages before the final classifier or final fuse.")
+        elif tag == "wide_fuse":
+            cues.append("- `wide_fuse`: make one fuse consume three or more incoming feature tensors.")
+        elif tag == "fractal_deep":
+            cues.append("- `fractal_deep`: use at least two visible fractal-stage calls in one branch, or one fractal call plus enough extra depth to avoid a shallow one-shot branch.")
+        elif tag == "branch_reuse":
+            cues.append("- `branch_reuse`: let one branch explicitly feed or condition another through a reuse, adapter, mixer, or extra merge stage.")
+    return "\n".join(cues) if cues else "- No extra parser-visible cues."
+
 skeleton_code = """import torch
 import torch.nn as nn
 import numpy as np
@@ -323,6 +341,8 @@ You are a Senior AI Architect. Produce one trainable dual-backbone image-classif
 - Design Brief: {design_brief}
 - Goal Tag Realization: {tag_realization}
 - Hitting only one target tag is still off-target. Make at least two target tags visible in the parsed graph.
+- Parser-visible target checklist:
+{goal_tag_parser_cues}
 - Seed Accuracy: `{accuracy}` (context only)
 
 [CODE SKELETON START]

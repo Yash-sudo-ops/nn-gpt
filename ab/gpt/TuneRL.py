@@ -273,7 +273,7 @@ STAGE1_STATIC_BASE_SCORE = 0.02
 STAGE1_GOAL_MATCH_SCALE = 0.10
 STAGE1_DISCOVERY_MIN_GOAL_HIT_RATE = 2.0 / 3.0
 STAGE1_ZERO_GOAL_HIT_PENALTY = -0.18
-STAGE1_LOW_GOAL_HIT_PENALTY = -0.08
+STAGE1_LOW_GOAL_HIT_PENALTY = -0.14
 STAGE1_STRUCTURE_GROUP_SCALE = 1.45
 STAGE1_STRUCTURE_ARCHIVE_SCALE = 1.85
 STAGE1_NON_DISCOVERY_EXECUTABLE_PENALTY = -0.20
@@ -294,8 +294,9 @@ STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_MAX_PENALTY = -0.18
 STAGE1_GRAPH_BATCH_REPEAT_STEP_PENALTY = -0.12
 STAGE1_GRAPH_BATCH_REPEAT_MAX_PENALTY = -0.36
 STAGE1_ZERO_GOAL_HIT_REWARD_CAP = 0.12
-STAGE1_LOW_GOAL_HIT_REWARD_CAP = 0.14
+STAGE1_LOW_GOAL_HIT_REWARD_CAP = 0.08
 STAGE1_PLAIN_PARALLEL_REWARD_CAP = 0.14
+STAGE1_OFF_TARGET_PLAIN_PARALLEL_REWARD_CAP = 0.05
 STAGE23_DESCRIPTOR_BATCH_UNIQUE_BONUS = 0.03
 STAGE23_DESCRIPTOR_ARCHIVE_NOVEL_BONUS = 0.02
 STAGE23_NON_DOMINANT_DESCRIPTOR_BONUS = 0.06
@@ -3993,7 +3994,10 @@ def base_discovery_reward_fn(
         if graph_info.is_plain_parallel_triple:
             plain_parallel_repeat = True
             if stage_name == STAGE1_STRUCTURE_EXPLORE:
-                r_plain_fuse_penalty = min(r_plain_fuse_penalty, STAGE1_PLAIN_PARALLEL_WARMUP_PENALTY)
+                if goal_tag_hit_rate < STAGE1_DISCOVERY_MIN_GOAL_HIT_RATE:
+                    r_plain_fuse_penalty = min(r_plain_fuse_penalty, STAGE1_PLAIN_PARALLEL_PENALTY)
+                else:
+                    r_plain_fuse_penalty = min(r_plain_fuse_penalty, STAGE1_PLAIN_PARALLEL_WARMUP_PENALTY)
             elif (not group_warmup) and not discovery_candidate:
                 r_plain_fuse_penalty = PLAIN_FUSE_PENALTY
 
@@ -4098,6 +4102,8 @@ def base_discovery_reward_fn(
                     reward_target_value = min(float(reward_target_value), STAGE1_LOW_GOAL_HIT_REWARD_CAP)
             if graph_info.is_plain_parallel_triple:
                 reward_target_value = min(float(reward_target_value), STAGE1_PLAIN_PARALLEL_REWARD_CAP)
+                if goal_alignment_scale < STAGE1_DISCOVERY_MIN_GOAL_HIT_RATE:
+                    reward_target_value = min(float(reward_target_value), STAGE1_OFF_TARGET_PLAIN_PARALLEL_REWARD_CAP)
             shallow_pattern_repeat = bool(
                 (not discovery_candidate)
                 and shallow_one_shot
@@ -5285,6 +5291,7 @@ def load_rl_dataset(tokenizer):
                 target_pattern=target_pattern,
                 design_brief=profile["brief"],
                 tag_realization=profile.get("realization", profile["brief"]),
+                goal_tag_parser_cues=SFTUtil.goal_tag_parser_cues(profile["tags"]),
                 module_hints=", ".join(module_hints),
                 block_signature=PROMPT_BLOCK_SIGNATURE,
                 init_signature=PROMPT_INIT_SIGNATURE,

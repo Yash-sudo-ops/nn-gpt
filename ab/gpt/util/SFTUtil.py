@@ -272,8 +272,8 @@ Complete the three missing components. **DO NOT** write generic code. You must i
    - **Initialization**: 
      - Initialize `self.backbone_a` and `self.backbone_b` using `TorchVision(model='...', in_channels=...)`.
      - Initialize `self.features` (1-2 `FractalUnit` layers).
-     - Set `self._input_spec = tuple(in_shape[1:])`.
-     - Call `self.infer_dimensions_dynamically(out_shape[0])`.
+     - Store the image input spec on `self._input_spec` so the provided dynamic sizing helper can probe the classifier dimension.
+     - Finish `__init__` by using the existing `infer_dimensions_dynamically` helper once with the class count from `out_shape`.
    - **Example Implementation Fragment**:
      ```python
      self.pattern = '{target_pattern}'
@@ -326,11 +326,12 @@ You are a Senior AI Architect. Produce one trainable dual-backbone image-classif
 1. Output ONLY `<block>`, `<init>`, `<forward>`. No markdown, no explanation, no extra text.
 2. Implement only `drop_conv3x3_block`, `Net.__init__`, and `Net.forward`.
 3. Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b` from [{available_backbones}].
-4. In `__init__`, set `self.pattern` to a concise descriptive name, set `self.device = device`, `self.use_amp = torch.cuda.is_available()`, `self._input_spec = tuple(in_shape[1:])`, then call `self.infer_dimensions_dynamically(out_shape[0])`.
-5. Keep `forward` as a direct computation graph. Do not use `if self.pattern`, extra `import` lines, extra classes, or dynamic wrapper logic.
-6. Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs, and return classifier logits.
-7. Do not call `infer_dimensions(...)`, do not rename `infer_dimensions_dynamically`, and do not reference undefined names such as `dropout_prob`, `in_channels`, or `features`.
-8. Improve accuracy through visible structure such as {module_hints}. Avoid dead modules and the plain one-shot classifier-only fuse.
+4. In `__init__`, set `self.pattern`, `self.device`, `self.use_amp`, and `self._input_spec`, then finish the provided classifier-sizing setup by using the existing `infer_dimensions_dynamically` helper once with the class count from `out_shape`.
+5. Treat the fixed infrastructure as read-only. Do not rewrite helper APIs or add replacement dimension-inference helpers.
+6. Keep `forward` as a direct computation graph. Do not use `if self.pattern`, extra `import` lines, extra classes, or dynamic wrapper logic.
+7. Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs, and return classifier logits.
+8. Do not reference undefined names such as `dropout_prob`, `in_channels`, or `features`.
+9. Improve accuracy through visible structure such as {module_hints}. Avoid dead modules and the plain one-shot classifier-only fuse.
 
 ### Output Requirement (STRICT)
 Read the optimization feedback below, then write the final XML answer. The final answer must begin with `<block>` and end with `</forward>`.

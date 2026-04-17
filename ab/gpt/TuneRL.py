@@ -271,6 +271,8 @@ STAGE1_DISCOVERY_FAMILY_BONUS = 0.42
 STAGE1_DISCOVERY_GRAPH_BONUS = 0.20
 STAGE1_STATIC_BASE_SCORE = 0.02
 STAGE1_GOAL_MATCH_SCALE = 0.10
+STAGE1_ZERO_GOAL_HIT_PENALTY = -0.18
+STAGE1_LOW_GOAL_HIT_PENALTY = -0.08
 STAGE1_STRUCTURE_GROUP_SCALE = 1.45
 STAGE1_STRUCTURE_ARCHIVE_SCALE = 1.85
 STAGE1_NON_DISCOVERY_EXECUTABLE_PENALTY = -0.20
@@ -280,6 +282,7 @@ STAGE1_BATCH_REPEAT_STEP_PENALTY = -0.08
 STAGE1_BATCH_REPEAT_MAX_PENALTY = -0.40
 STAGE1_DOMINANT_FAMILY_PENALTY = -0.60
 STAGE1_PLAIN_PARALLEL_PENALTY = -0.70
+STAGE1_PLAIN_PARALLEL_WARMUP_PENALTY = -0.18
 STAGE1_DESCRIPTOR_BATCH_UNIQUE_BONUS = 0.12
 STAGE1_GRAPH_BATCH_UNIQUE_BONUS = 0.05
 STAGE1_DESCRIPTOR_ARCHIVE_NOVEL_BONUS = 0.03
@@ -289,6 +292,9 @@ STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_STEP_PENALTY = -0.03
 STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_MAX_PENALTY = -0.18
 STAGE1_GRAPH_BATCH_REPEAT_STEP_PENALTY = -0.12
 STAGE1_GRAPH_BATCH_REPEAT_MAX_PENALTY = -0.36
+STAGE1_ZERO_GOAL_HIT_REWARD_CAP = 0.12
+STAGE1_LOW_GOAL_HIT_REWARD_CAP = 0.16
+STAGE1_PLAIN_PARALLEL_REWARD_CAP = 0.14
 STAGE23_DESCRIPTOR_BATCH_UNIQUE_BONUS = 0.03
 STAGE23_DESCRIPTOR_ARCHIVE_NOVEL_BONUS = 0.02
 STAGE23_NON_DOMINANT_DESCRIPTOR_BONUS = 0.06
@@ -3983,13 +3989,12 @@ def base_discovery_reward_fn(
         ):
             dominant_family_repeat = True
             r_repeat_family = REPEAT_FAMILY_PENALTY
-        if (
-            (not group_warmup)
-            and graph_info.is_plain_parallel_triple
-            and not discovery_candidate
-        ):
+        if graph_info.is_plain_parallel_triple:
             plain_parallel_repeat = True
-            r_plain_fuse_penalty = PLAIN_FUSE_PENALTY
+            if stage_name == STAGE1_STRUCTURE_EXPLORE:
+                r_plain_fuse_penalty = min(r_plain_fuse_penalty, STAGE1_PLAIN_PARALLEL_WARMUP_PENALTY)
+            elif (not group_warmup) and not discovery_candidate:
+                r_plain_fuse_penalty = PLAIN_FUSE_PENALTY
 
     if stage_name == STAGE1_STRUCTURE_EXPLORE:
         reward_target_value = None
@@ -4002,6 +4007,7 @@ def base_discovery_reward_fn(
         )
         if executable_candidate:
             novelty_scale = max(0.35, float(stage1_validity_scale))
+            goal_alignment_scale = float(goal_tag_hit_rate or 0.0)
             r_structure_group *= (
                 STAGE1_STRUCTURE_GROUP_SCALE
                 * float(stage1_validity_scale)
@@ -4037,12 +4043,25 @@ def base_discovery_reward_fn(
                     STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_STEP_PENALTY * float(archive_snapshot_descriptor_freq - 1),
                 )
                 r_no_progress_penalty += descriptor_archive_repeat_penalty
-            if discovery_candidate:
-                r_goal_best = STAGE1_DISCOVERY_FAMILY_BONUS * novelty_scale
-            elif novel_vs_trainset_graph:
-                r_goal_best = STAGE1_DISCOVERY_GRAPH_BONUS * novelty_scale
+            if discovery_candidate and goal_alignment_scale > 0.0:
+                r_goal_best = (
+                    STAGE1_DISCOVERY_FAMILY_BONUS
+                    * novelty_scale
+                    * max(0.35, goal_alignment_scale)
+                )
+            elif novel_vs_trainset_graph and goal_alignment_scale > 0.0:
+                r_goal_best = (
+                    STAGE1_DISCOVERY_GRAPH_BONUS
+                    * novelty_scale
+                    * max(0.35, goal_alignment_scale)
+                )
             else:
                 r_no_progress_penalty += STAGE1_NON_DISCOVERY_EXECUTABLE_PENALTY
+            if goal_tag_total_count > 0:
+                if goal_alignment_scale <= 0.0:
+                    r_no_progress_penalty += STAGE1_ZERO_GOAL_HIT_PENALTY
+                elif goal_alignment_scale < 0.5:
+                    r_no_progress_penalty += STAGE1_LOW_GOAL_HIT_PENALTY
             if not res.get("backward_ok"):
                 r_no_progress_penalty += -0.06
             elif not res.get("loss_drop_ok"):
@@ -4071,6 +4090,13 @@ def base_discovery_reward_fn(
                 0.0,
                 1.0,
             )
+            if goal_tag_total_count > 0:
+                if goal_alignment_scale <= 0.0:
+                    reward_target_value = min(float(reward_target_value), STAGE1_ZERO_GOAL_HIT_REWARD_CAP)
+                elif goal_alignment_scale < 0.5:
+                    reward_target_value = min(float(reward_target_value), STAGE1_LOW_GOAL_HIT_REWARD_CAP)
+            if graph_info.is_plain_parallel_triple:
+                reward_target_value = min(float(reward_target_value), STAGE1_PLAIN_PARALLEL_REWARD_CAP)
             shallow_pattern_repeat = bool(
                 (not discovery_candidate)
                 and shallow_one_shot
@@ -5257,6 +5283,7 @@ def load_rl_dataset(tokenizer):
                 target_tags=", ".join(profile["tags"]),
                 target_pattern=target_pattern,
                 design_brief=profile["brief"],
+                tag_realization=profile.get("realization", profile["brief"]),
                 module_hints=", ".join(module_hints),
                 block_signature=PROMPT_BLOCK_SIGNATURE,
                 init_signature=PROMPT_INIT_SIGNATURE,

@@ -20,30 +20,35 @@ open_discovery_goal_profiles = (
         "tags": ("stem", "project", "multi_stage"),
         "brief": "Build a real learned stem before branching. Each major branch should pass through an explicit project or bridge module before a later-stage fusion. Avoid a single terminal concat of raw branch outputs.",
         "module_hints": ("self.stem", "self.project_a", "self.project_b", "self.bridge", "self.fuse"),
+        "realization": "Start from a visible `self.stem`, then keep explicit `self.project_*` or `self.bridge` modules on the branches before a later fuse. The fuse should happen after at least two visible stages, not as a single raw concat at classifier input.",
     },
     {
         "name": "DeepFractalProject",
         "tags": ("fractal_deep", "project", "multi_stage"),
         "brief": "Create one deeper path with at least two fractal-like stages or a fractal stage plus a projector before fusion. The deep path should be structurally different from a one-shot fractal branch.",
         "module_hints": ("self.project", "self.bridge", "self.fractal_stage1", "self.fractal_stage2", "self.fuse"),
+        "realization": "Make one branch visibly deeper with `self.fractal_stage1` plus `self.fractal_stage2`, or a fractal stage followed by `self.project` or `self.bridge`, before the final fuse. Keep the projector or bridge in the actual forward graph.",
     },
     {
         "name": "SplitStemWideFuse",
         "tags": ("stem", "wide_fuse", "multi_stage"),
         "brief": "Use a shared stem to feed asymmetric branches, then perform a staged wide fusion. One branch may stay lightweight while another becomes deeper, but they should not meet only once at the classifier input.",
         "module_hints": ("self.stem", "self.branch_a", "self.branch_b", "self.project", "self.fuse"),
+        "realization": "Use `self.stem` first, then split into asymmetric branches, then perform a visible staged or wide fuse. Do not wait until the classifier input to combine the branches only once.",
     },
     {
         "name": "ProjectReuseMixer",
         "tags": ("project", "branch_reuse", "multi_stage"),
         "brief": "Let one branch condition or align another through a project, bridge, adapter, or mixer block before the final classifier. Use at least two graph merges or one explicit reuse stage plus a final fuse.",
         "module_hints": ("self.project", "self.bridge", "self.adapter", "self.mixer", "self.fuse"),
+        "realization": "Keep an explicit `self.project` or `self.bridge` path that conditions or reuses another branch through `self.adapter` or `self.mixer`, then finish with a later fuse. The reuse stage must be visible in `forward`.",
     },
     {
         "name": "StemProjectWide",
         "tags": ("stem", "project", "wide_fuse"),
         "brief": "Expose a visible stem and explicit projection modules, then use a wider fusion with three or more incoming branch features. The projected branches should remain visible in the computation graph.",
         "module_hints": ("self.stem", "self.project_a", "self.project_b", "self.project_c", "self.fuse"),
+        "realization": "Build a visible `self.stem`, keep explicit projection modules, and make the final fuse visibly wide with three or more incoming projected features.",
     },
 )
 
@@ -316,6 +321,7 @@ You are a Senior AI Architect. Produce one trainable dual-backbone image-classif
 - Optimization Track: {goal_name}
 - Optimization Target Tags: {target_tags}
 - Design Brief: {design_brief}
+- Goal Tag Realization: {tag_realization}
 - Seed Accuracy: `{accuracy}` (context only)
 
 [CODE SKELETON START]
@@ -326,12 +332,12 @@ You are a Senior AI Architect. Produce one trainable dual-backbone image-classif
 1. Output ONLY `<block>`, `<init>`, `<forward>`. No markdown, no explanation, no extra text.
 2. Implement only `drop_conv3x3_block`, `Net.__init__`, and `Net.forward`.
 3. Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b` from [{available_backbones}].
-4. In `__init__`, follow this minimal order: call `super().__init__()`, set `self.pattern` / `self.device` / `self.use_amp` / `self._input_spec`, define the modules used by `forward`, then finish the provided classifier-sizing setup by calling the existing `infer_dimensions_dynamically` helper once with only the class count from `out_shape`.
+4. In `__init__`, follow this minimal order: call `super().__init__()`, set `self.pattern`, `self.device`, `self.use_amp`, and `self._input_spec = tuple(in_shape[1:])`, define the modules used by `forward`, then call `self.infer_dimensions_dynamically(out_shape[0])` exactly once after the modules are defined.
 5. Treat the fixed infrastructure as read-only. Do not rewrite helper APIs or add replacement dimension-inference helpers.
 6. Keep `forward` as a direct computation graph. Do not use `if self.pattern`, extra `import` lines, extra classes, or dynamic wrapper logic.
 7. Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs, and return classifier logits.
 8. Do not reference undefined names such as `dropout_prob`, `in_channels`, or `features`.
-9. Improve accuracy through visible structure such as {module_hints}. Avoid dead modules and the plain one-shot classifier-only fuse.
+9. Improve accuracy through visible structure such as {module_hints}. Avoid dead modules, `ParallelTriple_Shallow`, and the plain one-shot classifier-only fuse.
 
 ### Output Requirement (STRICT)
 Read the optimization feedback below, then write the final XML answer. The final answer must begin with `<block>` and end with `</forward>`.

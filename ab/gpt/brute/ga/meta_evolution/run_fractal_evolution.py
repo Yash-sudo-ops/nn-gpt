@@ -82,7 +82,7 @@ def fitness_function(chromosome: dict) -> float:
         print(f"  - Evaluating unique arch (checksum: {model_checksum[:8]}...)")
         
         # 2. Save Model File to ARCH_DIR
-        model_name = f"img-classification_cifar-10_FractalNet-{model_checksum}"
+        model_name = f"FractalNet-{model_checksum}"
         filepath = os.path.join(ARCH_DIR, f"{model_name}.py")
         
         with open(filepath, 'w') as f: 
@@ -94,7 +94,8 @@ def fitness_function(chromosome: dict) -> float:
             'momentum': chromosome['momentum'],
             'batch': 64,  # Increased from 32: more signal per step, avoids AccuracyException floor
             'epoch': 1,   # Short epochs for Meta-Evaluation
-            'transform': "norm_32_flip"  # Native CIFAR-10 resolution (was 256 → massive slowdown)
+            'transform': "norm_32_flip",  # Native CIFAR-10 resolution (was 256 → massive slowdown)
+            'max_batches': None,  # None = full dataset (782 batches), or set int for proxy eval (e.g. 200)
         }
 
         # --- FIX: Delete stale training_summary.json before eval so it
@@ -173,7 +174,7 @@ def fitness_function(chromosome: dict) -> float:
         
         # Save exact requested stats format to a JSON folder structure
         # One JSON file per epoch: 1.json, 2.json, ..., N.json
-        model_stats_dir_name = f"img-classification_cifar_FractalNet-{model_checksum}"
+        model_stats_dir_name = f"img-classification_cifar-10_FractalNet-{model_checksum}"
         model_stats_dir_path = os.path.join(STATS_DIR, model_stats_dir_name)
         os.makedirs(model_stats_dir_path, exist_ok=True)
 

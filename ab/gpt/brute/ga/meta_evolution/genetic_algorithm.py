@@ -37,10 +37,8 @@ class GeneticAlgorithm:
         Decide which parent's gene to use for a child chromosome.
         Returns the chosen gene value.
         """
-        if gene_index < crossover_point:
-            return parent1_value
-        else:
-            return parent2_value
+        blend = (parent1_value * (total_genes - gene_index) + parent2_value * gene_index) / total_genes
+        return blend
 
     def _crossover(self, parent1_chromo, parent2_chromo):
         child_chromo = {}
@@ -64,9 +62,11 @@ class GeneticAlgorithm:
             return
         if len(possible_values) == 1:
             return possible_values[0]
-        new_value = random.choice(possible_values)
+        new_value = np.random.choice(possible_values)
         while new_value == current_value:
-            new_value = random.choice(possible_values)
+            new_value = np.random.choice(possible_values)
+            if len(possible_values) == 1:
+                return possible_values[0]
         return new_value
     def _mutate(self, chromosome):
         mutated_chromo = chromosome.copy()

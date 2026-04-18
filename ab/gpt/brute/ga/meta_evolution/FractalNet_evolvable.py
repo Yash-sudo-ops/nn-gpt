@@ -137,12 +137,14 @@ def generate_model_code_string(chromosome: dict) -> str:
                     lr=prm['lr'],       
                     momentum=prm['momentum']
                 )
+                self.max_batches = prm.get('max_batches', None)  # None = full dataset
                 return self.optimizer
 
             def learn(self, train_data):
                 self.train()
                 for i, (inputs, labels) in enumerate(train_data):
-                    if i >= 20: break # Limit to ~1.3% of data (20/1563 batches) for speed
+                    # if self.max_batches and i >= self.max_batches: break  # Controlled via prm['max_batches']
+                    if self.max_batches is not None and i >= self.max_batches: break
                     inputs, labels = inputs.to(self.device), labels.to(self.device)
                     self.optimizer.zero_grad()
                     outputs = self(inputs)

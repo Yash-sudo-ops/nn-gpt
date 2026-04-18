@@ -4,8 +4,8 @@ __pycache__/
 .venv/
 
 # Local Experiment Artifacts
-ga_fractal_arch/
-stats/
+# ga_fractal_arch/
+# stats/
 out/
 fine_tuned_adapter/
 ga_history_backup/

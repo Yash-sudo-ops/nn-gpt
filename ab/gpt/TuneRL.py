@@ -266,10 +266,10 @@ TRAINING_CONTEXT_WINDOW = 50
 TRAINING_CONTEXT_MIN_POINTS = 8
 STATIC_STAGE_REWARD_TARGET_METRIC = "stage1_static_score"
 FORMAL_STAGE_REWARD_TARGET_METRIC = "frozen_test_acc"
-STAGE1_EXECUTABLE_BONUS = 0.08
+STAGE1_EXECUTABLE_BONUS = 0.10
 STAGE1_DISCOVERY_FAMILY_BONUS = 0.42
 STAGE1_DISCOVERY_GRAPH_BONUS = 0.20
-STAGE1_STATIC_BASE_SCORE = 0.02
+STAGE1_STATIC_BASE_SCORE = 0.04
 STAGE1_GOAL_MATCH_SCALE = 0.10
 STAGE1_DISCOVERY_MIN_GOAL_HIT_RATE = 1.0 / 3.0
 STAGE1_ZERO_GOAL_HIT_PENALTY = 0.0
@@ -277,22 +277,22 @@ STAGE1_LOW_GOAL_HIT_PENALTY = 0.0
 STAGE1_STRUCTURE_GROUP_SCALE = 1.45
 STAGE1_STRUCTURE_ARCHIVE_SCALE = 1.85
 STAGE1_NON_DISCOVERY_EXECUTABLE_PENALTY = 0.0
-STAGE1_ARCHIVE_REPEAT_STEP_PENALTY = -0.08
-STAGE1_ARCHIVE_REPEAT_MAX_PENALTY = -0.60
-STAGE1_BATCH_REPEAT_STEP_PENALTY = -0.08
-STAGE1_BATCH_REPEAT_MAX_PENALTY = -0.40
-STAGE1_DOMINANT_FAMILY_PENALTY = -0.15
-STAGE1_PLAIN_PARALLEL_PENALTY = -0.18
-STAGE1_PLAIN_PARALLEL_WARMUP_PENALTY = -0.06
+STAGE1_ARCHIVE_REPEAT_STEP_PENALTY = -0.05
+STAGE1_ARCHIVE_REPEAT_MAX_PENALTY = -0.30
+STAGE1_BATCH_REPEAT_STEP_PENALTY = -0.05
+STAGE1_BATCH_REPEAT_MAX_PENALTY = -0.24
+STAGE1_DOMINANT_FAMILY_PENALTY = -0.08
+STAGE1_PLAIN_PARALLEL_PENALTY = -0.10
+STAGE1_PLAIN_PARALLEL_WARMUP_PENALTY = -0.03
 STAGE1_DESCRIPTOR_BATCH_UNIQUE_BONUS = 0.12
 STAGE1_GRAPH_BATCH_UNIQUE_BONUS = 0.05
 STAGE1_DESCRIPTOR_ARCHIVE_NOVEL_BONUS = 0.03
-STAGE1_DESCRIPTOR_BATCH_REPEAT_STEP_PENALTY = -0.10
-STAGE1_DESCRIPTOR_BATCH_REPEAT_MAX_PENALTY = -0.30
-STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_STEP_PENALTY = -0.03
-STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_MAX_PENALTY = -0.18
-STAGE1_GRAPH_BATCH_REPEAT_STEP_PENALTY = -0.12
-STAGE1_GRAPH_BATCH_REPEAT_MAX_PENALTY = -0.36
+STAGE1_DESCRIPTOR_BATCH_REPEAT_STEP_PENALTY = -0.04
+STAGE1_DESCRIPTOR_BATCH_REPEAT_MAX_PENALTY = -0.12
+STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_STEP_PENALTY = -0.02
+STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_MAX_PENALTY = -0.08
+STAGE1_GRAPH_BATCH_REPEAT_STEP_PENALTY = -0.06
+STAGE1_GRAPH_BATCH_REPEAT_MAX_PENALTY = -0.18
 STAGE1_ZERO_GOAL_HIT_REWARD_CAP = 1.0
 STAGE1_LOW_GOAL_HIT_REWARD_CAP = 1.0
 STAGE1_PLAIN_PARALLEL_REWARD_CAP = 1.0
@@ -3226,29 +3226,29 @@ def _stage1_validity_scale(res: Dict[str, Any]) -> float:
     if bool(res.get("loss_drop_ok")):
         return 1.0
     if bool(res.get("backward_ok")):
-        return 0.70
+        return 0.85
     if bool(res.get("forward_shape_ok")):
-        return 0.35
+        return 0.55
     return 0.0
 
 
 def _stage1_validity_reward(res: Dict[str, Any], graph_info) -> float:
     if not graph_info or not graph_info.parse_ok:
-        return -0.35
+        return -0.25
     if not res.get("built_ok"):
         build_partial = float(res.get("r_build_partial", 0.0) or 0.0)
-        return min(-0.45, -0.70 + build_partial)
+        return min(-0.25, -0.50 + build_partial)
     if not res.get("forward_ok"):
-        return -0.28
+        return -0.18
     if not res.get("forward_shape_ok"):
-        return -0.16
+        return -0.08
     if not res.get("backward_ok"):
-        return -0.06
+        return -0.02
     if not res.get("loss_drop_ok"):
         loss_drop = _optional_float(res.get("loss_drop"))
         if loss_drop is None:
-            return -0.01
-        return _clip(-0.02 + 0.35 * float(loss_drop), -0.04, 0.03)
+            return 0.02
+        return _clip(0.01 + 0.25 * float(loss_drop), -0.01, 0.05)
     return STAGE1_EXECUTABLE_BONUS
 
 
@@ -3260,9 +3260,9 @@ def _template_penalty(
 ) -> float:
     penalty = 0.0
     if shallow_one_shot:
-        penalty += -0.12 if stage_name == STAGE1_STRUCTURE_EXPLORE else -0.05
+        penalty += -0.08 if stage_name == STAGE1_STRUCTURE_EXPLORE else -0.05
     if minimal_init_template:
-        penalty += -0.16 if stage_name == STAGE1_STRUCTURE_EXPLORE else -0.08
+        penalty += -0.10 if stage_name == STAGE1_STRUCTURE_EXPLORE else -0.08
     return penalty
 
 
@@ -4028,24 +4028,24 @@ def base_discovery_reward_fn(
                 )
                 if batch_same_graph_count == 1:
                     r_structure_group += STAGE1_GRAPH_BATCH_UNIQUE_BONUS * novelty_scale
-            else:
+            elif batch_same_descriptor_count > 2:
                 descriptor_batch_repeat_penalty = max(
                     STAGE1_DESCRIPTOR_BATCH_REPEAT_MAX_PENALTY,
-                    STAGE1_DESCRIPTOR_BATCH_REPEAT_STEP_PENALTY * float(batch_same_descriptor_count - 1),
+                    STAGE1_DESCRIPTOR_BATCH_REPEAT_STEP_PENALTY * float(batch_same_descriptor_count - 2),
                 )
                 r_no_progress_penalty += descriptor_batch_repeat_penalty
-                if batch_same_graph_count > 1:
+                if batch_same_graph_count > 2:
                     graph_batch_repeat_penalty = max(
                         STAGE1_GRAPH_BATCH_REPEAT_MAX_PENALTY,
-                        STAGE1_GRAPH_BATCH_REPEAT_STEP_PENALTY * float(batch_same_graph_count - 1),
+                        STAGE1_GRAPH_BATCH_REPEAT_STEP_PENALTY * float(batch_same_graph_count - 2),
                     )
                     r_no_progress_penalty += graph_batch_repeat_penalty
             if archive_snapshot_descriptor_freq <= 0:
                 r_structure_archive += STAGE1_DESCRIPTOR_ARCHIVE_NOVEL_BONUS * novelty_scale
-            elif archive_snapshot_descriptor_freq > 1:
+            elif archive_snapshot_descriptor_freq > 3:
                 descriptor_archive_repeat_penalty = max(
                     STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_MAX_PENALTY,
-                    STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_STEP_PENALTY * float(archive_snapshot_descriptor_freq - 1),
+                    STAGE1_DESCRIPTOR_ARCHIVE_REPEAT_STEP_PENALTY * float(archive_snapshot_descriptor_freq - 3),
                 )
                 r_no_progress_penalty += descriptor_archive_repeat_penalty
             if discovery_candidate and goal_alignment_scale >= STAGE1_DISCOVERY_MIN_GOAL_HIT_RATE:
@@ -4067,10 +4067,6 @@ def base_discovery_reward_fn(
                     r_no_progress_penalty += STAGE1_ZERO_GOAL_HIT_PENALTY
                 elif goal_alignment_scale < 0.5:
                     r_no_progress_penalty += STAGE1_LOW_GOAL_HIT_PENALTY
-            if not res.get("backward_ok"):
-                r_no_progress_penalty += -0.06
-            elif not res.get("loss_drop_ok"):
-                r_no_progress_penalty += -0.04
             if archive_snapshot_family_freq > 0:
                 archive_repeat_penalty = max(
                     STAGE1_ARCHIVE_REPEAT_MAX_PENALTY,
@@ -4110,15 +4106,14 @@ def base_discovery_reward_fn(
                 and (archive_snapshot_family_freq > 0 or batch_same_family_count >= 3)
             )
             if (
-                (not discovery_candidate and archive_snapshot_family_freq > 3)
+                (not discovery_candidate and archive_snapshot_family_freq > 5)
                 or shallow_pattern_repeat
-                or plain_parallel_repeat
                 or dominant_family_repeat
                 or minimal_init_template
             ):
-                reward_target_value = min(float(reward_target_value), 0.18)
+                reward_target_value = min(float(reward_target_value), 0.26)
                 if minimal_init_template:
-                    reward_target_value = min(float(reward_target_value), 0.12)
+                    reward_target_value = min(float(reward_target_value), 0.18)
         r_history_context = _history_context_reward(
             stage_name=stage_name,
             training_context=training_context,
@@ -5268,6 +5263,7 @@ def load_rl_dataset(tokenizer):
     print(f"Loaded {len(data)} examples for RL")
     bootstrap_trainset_reference_library(data)
 
+    prompt_template = SFTUtil.open_discovery_prompt_template_for_stage(current_stage_name)
     prompts = []
     legacy_patterns = ", ".join(SFTUtil.legacy_patterns)
     goal_profiles = SFTUtil.open_discovery_goal_profiles
@@ -5281,7 +5277,7 @@ def load_rl_dataset(tokenizer):
                 "self.backbone_b",
                 *profile["module_hints"],
             )
-            user_prompt = PROMPT_TEMPLATE.format(
+            user_prompt = prompt_template.format(
                 accuracy=accuracy,
                 skeleton_code=SFTUtil.open_discovery_skeleton_code,
                 available_backbones=", ".join(SFTUtil.available_backbones),

@@ -349,12 +349,53 @@ You are a Senior AI Architect. Produce one trainable dual-backbone image-classif
 1. Output ONLY `<block>`, `<init>`, `<forward>`. No markdown, no explanation, no extra text.
 2. Implement only `drop_conv3x3_block`, `Net.__init__`, and `Net.forward`.
 3. Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b` from [{available_backbones}].
-4. In `__init__`, set `self.pattern`, `self.device`, `self.use_amp`, and `self._input_spec = tuple(in_shape[1:])`, then call `self.infer_dimensions_dynamically(out_shape[0])` after the modules used by `forward` are defined.
+4. In `__init__`, set `self.pattern`, `self.device`, `self.use_amp`, and `self._input_spec = tuple(in_shape[1:])`, then call the existing `self.infer_dimensions_dynamically(...)` helper once with the class count after the modules used by `forward` are defined.
 5. Treat the fixed infrastructure as read-only. Do not rewrite helper APIs or add replacement dimension-inference helpers.
 6. Keep `forward` as a direct computation graph. Do not use `if self.pattern`, extra `import` lines, extra classes, or dynamic wrapper logic.
 7. Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs, and return classifier logits.
 8. Do not reference undefined names such as `dropout_prob`, `in_channels`, or `features`.
-9. Prioritize a runnable, trainable graph over novelty. Simple structure is acceptable if it trains cleanly. If you define `self.classifier`, still keep `self._input_spec` and `self.infer_dimensions_dynamically(out_shape[0])`.
+9. Prioritize a runnable, trainable graph over novelty. Simple structure is acceptable if it trains cleanly. If you define `self.classifier`, still keep `self._input_spec` and the required dynamic sizing helper call.
+
+### Output Requirement (STRICT)
+Read the optimization feedback below, then write the final XML answer. The final answer must begin with `<block>` and end with `</forward>`.
+
+<block>
+{block_signature}
+    ...
+</block>
+<init>
+{init_signature}
+    ...
+</init>
+<forward>
+{forward_signature}
+    ...
+</forward>
+"""
+
+stage1_backbone_rl_prompt_template = """
+### Role & Goal
+You are a Senior AI Architect. Produce one runnable dual-backbone image-classification architecture that trains cleanly.
+
+### Task Context
+- Optimization Track: {goal_name}
+- Optimization Target Tags: {target_tags}
+- Design Brief: {design_brief}
+- Seed Accuracy: `{accuracy}` (context only)
+
+[CODE SKELETON START]
+{skeleton_code}
+[CODE SKELETON END]
+
+### Basic Requirements
+1. Output ONLY `<block>`, `<init>`, `<forward>`. No markdown, no explanation, no extra text.
+2. Implement only `drop_conv3x3_block`, `Net.__init__`, and `Net.forward`.
+3. Use EXACTLY two backbones named `self.backbone_a` and `self.backbone_b` from [{available_backbones}].
+4. In `__init__`, set `self.pattern`, `self.device`, `self.use_amp`, and `self._input_spec = tuple(in_shape[1:])`, then call the existing `self.infer_dimensions_dynamically(...)` helper once with the class count after the modules used by `forward` are defined.
+5. Keep `forward` as a direct computation graph. Do not use `if self.pattern`, extra `import` lines, extra classes, or dynamic wrapper logic.
+6. Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs, and return classifier logits.
+7. Avoid undefined names such as `dropout_prob`, `in_channels`, or `features`. Every major module you define should actually be used.
+8. Prioritize a runnable, trainable graph over novelty. Start simple if needed. Visible stem/project/fuse structure is welcome but not mandatory.
 
 ### Output Requirement (STRICT)
 Read the optimization feedback below, then write the final XML answer. The final answer must begin with `<block>` and end with `</forward>`.
@@ -375,6 +416,12 @@ Read the optimization feedback below, then write the final XML answer. The final
 
 open_discovery_prompt_template = compact_backbone_rl_prompt_template
 open_discovery_rl_prompt_template = compact_backbone_rl_prompt_template
+
+
+def open_discovery_prompt_template_for_stage(stage_name: str) -> str:
+    if str(stage_name or "") == "stage1_structure_explore":
+        return stage1_backbone_rl_prompt_template
+    return compact_backbone_rl_prompt_template
 
 def parse_nn_code(code_str):
     try:

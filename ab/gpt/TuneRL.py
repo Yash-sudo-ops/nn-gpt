@@ -5263,7 +5263,6 @@ def load_rl_dataset(tokenizer):
     print(f"Loaded {len(data)} examples for RL")
     bootstrap_trainset_reference_library(data)
 
-    prompt_template = SFTUtil.open_discovery_prompt_template_for_stage(current_stage_name)
     prompts = []
     legacy_patterns = ", ".join(SFTUtil.legacy_patterns)
     goal_profiles = SFTUtil.open_discovery_goal_profiles
@@ -5277,7 +5276,7 @@ def load_rl_dataset(tokenizer):
                 "self.backbone_b",
                 *profile["module_hints"],
             )
-            user_prompt = prompt_template.format(
+            user_prompt = PROMPT_TEMPLATE.format(
                 accuracy=accuracy,
                 skeleton_code=SFTUtil.open_discovery_skeleton_code,
                 available_backbones=", ".join(SFTUtil.available_backbones),

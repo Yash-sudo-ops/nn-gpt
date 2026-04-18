@@ -1310,13 +1310,12 @@ class DynamicSFTPromptDataset(TorchDataset):
     def _render_prompt(self, row: Dict[str, Any]) -> str:
         profile = SFTUtil.open_discovery_goal_profiles[int(row["goal_profile_id"])]
         target_pattern = SFTUtil.goal_profile_target_pattern(profile)
-        prompt_template = SFTUtil.open_discovery_prompt_template_for_stage(TuneRL.current_stage_name)
         module_hints = (
             "self.backbone_a",
             "self.backbone_b",
             *profile["module_hints"],
         )
-        user_prompt = prompt_template.format(
+        user_prompt = SFT_DISCOVERY_PROMPT_TEMPLATE.format(
             accuracy=row["accuracy"],
             skeleton_code=SFTUtil.open_discovery_skeleton_code,
             available_backbones=", ".join(SFTUtil.available_backbones),

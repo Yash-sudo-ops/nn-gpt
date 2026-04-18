@@ -274,14 +274,9 @@ def _repair_init_abi(init_code: str) -> str:
 
     repaired_body: List[str] = []
     for raw_line in body_lines:
-        stripped = raw_line.strip()
-        if stripped.startswith("super().__init__()"):
-            continue
-        if stripped.startswith("self.infer_dimensions_dynamically("):
+        if raw_line.strip().startswith("self.infer_dimensions_dynamically("):
             continue
         repaired_body.append(raw_line)
-
-    repaired_body.insert(0, "    super().__init__()")
 
     if not any(line.strip().startswith("self.device =") for line in repaired_body):
         insert_at = _find_last_body_line_index(repaired_body, ("super().__init__()",))
@@ -307,15 +302,6 @@ def _repair_init_abi(init_code: str) -> str:
 def _normalize_init_code(init_code: str) -> str:
     normalized = _normalize_required_function(init_code, "__init__", INIT_SIGNATURE)
     return _repair_init_abi(normalized)
-
-
-def _repair_forward_attr_calls(forward_code: str, init_code: str) -> str:
-    if not forward_code:
-        return ""
-    repaired = forward_code
-    if "self.features =" in (init_code or ""):
-        repaired = re.sub(r"(?<![\w.])features\s*\(", "self.features(", repaired)
-    return repaired
 
 
 def _normalize_forward_code(forward_code: str) -> str:
@@ -423,7 +409,6 @@ def extract_completion_payload_tolerant(completion: str) -> Tuple[Tuple[str, str
     block_code = _normalize_block_code(_extract_xml_tag(candidate, "block"))
     init_code = _normalize_init_code(_extract_xml_tag(candidate, "init"))
     forward_code = _normalize_forward_code(_extract_xml_tag(candidate, "forward"))
-    forward_code = _repair_forward_attr_calls(forward_code, init_code)
     meta = _build_extraction_meta(completion or "", candidate, block_code, init_code, forward_code)
 
     _EXTRACTION_META_CACHE[cache_key] = {

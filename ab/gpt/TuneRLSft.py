@@ -251,8 +251,57 @@ def _normalize_block_code(block_code: str) -> str:
     return _normalize_required_function(block_code, "drop_conv3x3_block", BLOCK_SIGNATURE)
 
 
+def _find_last_body_line_index(lines: Sequence[str], prefixes: Sequence[str]) -> int:
+    last_index = 0
+    for index, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if any(stripped.startswith(prefix) for prefix in prefixes):
+            last_index = index + 1
+    return last_index
+
+
+def _repair_init_abi(init_code: str) -> str:
+    if not init_code:
+        return ""
+    lines = init_code.splitlines()
+    if not lines:
+        return init_code
+
+    signature = lines[0]
+    body_lines = list(lines[1:])
+    if not body_lines:
+        return init_code
+
+    repaired_body: List[str] = []
+    for raw_line in body_lines:
+        if raw_line.strip().startswith("self.infer_dimensions_dynamically("):
+            continue
+        repaired_body.append(raw_line)
+
+    if not any(line.strip().startswith("self.device =") for line in repaired_body):
+        insert_at = _find_last_body_line_index(repaired_body, ("super().__init__()",))
+        repaired_body.insert(insert_at, "    self.device = device")
+
+    if not any(line.strip().startswith("self.use_amp =") for line in repaired_body):
+        insert_at = _find_last_body_line_index(repaired_body, ("super().__init__()", "self.device ="))
+        repaired_body.insert(insert_at, "    self.use_amp = torch.cuda.is_available()")
+
+    if not any("self._input_spec" in line and "=" in line for line in repaired_body):
+        insert_at = _find_last_body_line_index(
+            repaired_body,
+            ("super().__init__()", "self.device =", "self.use_amp =", "self.pattern ="),
+        )
+        repaired_body.insert(insert_at, "    self._input_spec = tuple(in_shape[1:])")
+
+    while repaired_body and not repaired_body[-1].strip():
+        repaired_body.pop()
+    repaired_body.append("    self.infer_dimensions_dynamically(out_shape[0])")
+    return "\n".join([signature, *repaired_body])
+
+
 def _normalize_init_code(init_code: str) -> str:
-    return _normalize_required_function(init_code, "__init__", INIT_SIGNATURE)
+    normalized = _normalize_required_function(init_code, "__init__", INIT_SIGNATURE)
+    return _repair_init_abi(normalized)
 
 
 def _normalize_forward_code(forward_code: str) -> str:

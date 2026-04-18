@@ -354,7 +354,7 @@ You are a Senior AI Architect. Produce one trainable dual-backbone image-classif
 6. Keep `forward` as a direct computation graph. Do not use `if self.pattern`, extra `import` lines, extra classes, or dynamic wrapper logic.
 7. Use `adaptive_pool_flatten(...)` before concatenating or classifying branch outputs, and return classifier logits.
 8. Do not reference undefined names such as `dropout_prob`, `in_channels`, or `features`.
-9. Satisfy the target tags with real code structure. Prefer visible modules such as {module_hints}, and avoid dead modules or the plain one-shot classifier-only fuse.
+9. Prioritize a runnable, trainable graph over novelty. Simple structure is acceptable if it trains cleanly. If you define `self.classifier`, still keep `self._input_spec` and `self.infer_dimensions_dynamically(out_shape[0])`.
 
 ### Output Requirement (STRICT)
 Read the optimization feedback below, then write the final XML answer. The final answer must begin with `<block>` and end with `</forward>`.

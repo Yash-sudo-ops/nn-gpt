@@ -1319,25 +1319,14 @@ def _ast_call_target_name(node: ast.Call) -> Optional[str]:
     return None
 
 
-def _ast_subscript_index(node: ast.Subscript) -> Optional[ast.AST]:
-    slice_node = getattr(node, "slice", None)
-    if hasattr(ast, "Index") and isinstance(slice_node, ast.Index):
-        return slice_node.value
-    return slice_node
-
-
-def _is_exact_out_shape_zero_expr(node: ast.AST) -> bool:
-    if not isinstance(node, ast.Subscript):
+def _ast_is_self_method_call(node: ast.Call, method_name: str) -> bool:
+    func = getattr(node, "func", None)
+    if not isinstance(func, ast.Attribute):
         return False
-    target = getattr(node, "value", None)
-    if not isinstance(target, ast.Name) or str(target.id) != "out_shape":
+    if str(getattr(func, "attr", "")) != str(method_name):
         return False
-    index_node = _ast_subscript_index(node)
-    if isinstance(index_node, ast.Constant):
-        return index_node.value == 0
-    if hasattr(ast, "Num") and isinstance(index_node, ast.Num):
-        return index_node.n == 0
-    return False
+    owner = getattr(func, "value", None)
+    return isinstance(owner, ast.Name) and str(getattr(owner, "id", "")) == "self"
 
 
 def _cpu_prevalidate_reward_code(
@@ -1361,7 +1350,7 @@ def _cpu_prevalidate_reward_code(
         infer_dimensions_calls = 0
         infer_dimensions_dynamically_calls = 0
         bad_dynamic_arg_count = None
-        exact_dynamic_call_count = 0
+        valid_self_dynamic_calls = 0
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -1373,10 +1362,8 @@ def _cpu_prevalidate_reward_code(
                 explicit_arg_count = len(getattr(node, "args", [])) + len(getattr(node, "keywords", []))
                 if explicit_arg_count != 1 and bad_dynamic_arg_count is None:
                     bad_dynamic_arg_count = explicit_arg_count
-                elif len(getattr(node, "keywords", [])) == 0:
-                    args = list(getattr(node, "args", []))
-                    if len(args) == 1 and _is_exact_out_shape_zero_expr(args[0]):
-                        exact_dynamic_call_count += 1
+                elif _ast_is_self_method_call(node, "infer_dimensions_dynamically"):
+                    valid_self_dynamic_calls += 1
 
         if infer_dimensions_calls > 0:
             error_type = "AttributeError"
@@ -1387,9 +1374,9 @@ def _cpu_prevalidate_reward_code(
                 "TypeError: Net.infer_dimensions_dynamically() takes 2 positional arguments "
                 f"but {bad_dynamic_arg_count + 1} were given"
             )
-        elif infer_dimensions_dynamically_calls <= 0 or exact_dynamic_call_count != 1:
+        elif infer_dimensions_dynamically_calls <= 0 or valid_self_dynamic_calls <= 0:
             error_type = "RuntimeError"
-            error_message = "RuntimeError: Net.__init__ must call self.infer_dimensions_dynamically(out_shape[0])"
+            error_message = "RuntimeError: Net.__init__ must call self.infer_dimensions_dynamically(...)"
         elif not bool(code_trace.get("assigns_input_spec")):
             error_type = "AttributeError"
             error_message = "AttributeError: 'Net' object has no attribute '_input_spec'"
@@ -1440,6 +1427,8 @@ def _infer_error_hint(
         if code_trace.get("references_input_spec") and not code_trace.get("assigns_input_spec"):
             return "generated Net references self._input_spec but never assigns it in __init__"
         return "generated Net is missing self._input_spec before downstream shape inference"
+    if "must call self.infer_dimensions_dynamically" in normalized:
+        return "generated Net never calls self.infer_dimensions_dynamically(...) from __init__ before classifier probing"
     if "unknown model" in normalized:
         return "one of the selected backbone names is not available in the TorchVision wrapper"
     if "accuracyexception" in normalized:

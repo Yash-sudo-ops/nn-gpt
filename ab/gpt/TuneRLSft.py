@@ -805,8 +805,12 @@ def _maybe_relaunch_sft_with_visible_gpu_workers() -> None:
     if visible_cuda_devices <= 1:
         return
 
+    master_port = _resolve_sft_master_port()
     os.environ["NNGPT_SFT_AUTO_TORCHRUN_DONE"] = "1"
-    print("[SFT RL] Relaunching with single training worker: nproc_per_node=1")
+    print(
+        "[SFT RL] Relaunching with single training worker: "
+        f"nproc_per_node=1 master_addr={os.environ['MASTER_ADDR']} master_port={master_port}"
+    )
     os.execvpe(
         sys.executable,
         [
@@ -814,6 +818,8 @@ def _maybe_relaunch_sft_with_visible_gpu_workers() -> None:
             "-m",
             "torch.distributed.run",
             "--nproc_per_node=1",
+            f"--master_addr={os.environ['MASTER_ADDR']}",
+            f"--master_port={master_port}",
             "-m",
             "ab.gpt.TuneRLSft",
         ],
@@ -928,6 +934,22 @@ def _bootstrap_run_token(runtime: Dict[str, Any] | None = None) -> str:
         if value:
             return str(value)
     return f"rank0_world{int(runtime.get('world_size', 1))}"
+
+
+def _resolve_sft_master_port() -> str:
+    master_port = str(os.getenv("MASTER_PORT", "")).strip()
+    if master_port:
+        os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+        return master_port
+
+    slurm_job_id = str(os.getenv("SLURM_JOB_ID", "")).strip()
+    if slurm_job_id.isdigit():
+        master_port = str(20000 + (int(slurm_job_id) % 20000))
+    else:
+        master_port = str(20000 + (os.getpid() % 20000))
+    os.environ["MASTER_PORT"] = master_port
+    os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+    return master_port
 
 
 def _bootstrap_sentinel_path(log_dir: str, runtime: Dict[str, Any] | None = None) -> Path:

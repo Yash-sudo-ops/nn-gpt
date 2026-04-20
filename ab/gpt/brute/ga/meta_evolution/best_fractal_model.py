@@ -58,15 +58,15 @@ class Net(nn.Module):
             nn.ReLU(inplace=True)
         )
 
-        # Dynamically build 2 fractal block(s) with channel doubling
+        # Dynamically build 3 fractal block(s) with channel doubling
         blocks = []
         pools = []
         trans_layers = []
-        cur_chan = 32
-        for i in range(2):
-            blocks.append(FractalBlock(2, cur_chan, 0.1))
+        cur_chan = 64
+        for i in range(3):
+            blocks.append(FractalBlock(3, cur_chan, 0.0))
             pools.append(nn.MaxPool2d(2))
-            if i < 2 - 1:
+            if i < 3 - 1:
                 next_chan = cur_chan * 2
                 trans_layers.append(nn.Sequential(
                     nn.Conv2d(cur_chan, next_chan, kernel_size=1),
@@ -109,12 +109,14 @@ class Net(nn.Module):
             lr=prm['lr'],       
             momentum=prm['momentum']
         )
+        self.max_batches = prm.get('max_batches', None)  # None = full dataset
         return self.optimizer
 
     def learn(self, train_data):
         self.train()
         for i, (inputs, labels) in enumerate(train_data):
-            if i >= 20: break # Limit to ~1.3% of data (20/1563 batches) for speed
+            # if self.max_batches and i >= self.max_batches: break  # Controlled via prm['max_batches']
+            if self.max_batches is not None and i >= self.max_batches: break
             inputs, labels = inputs.to(self.device), labels.to(self.device)
             self.optimizer.zero_grad()
             outputs = self(inputs)

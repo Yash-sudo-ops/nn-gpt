@@ -8,7 +8,7 @@ def supported_hyperparameters():
 
 # --- Helper Classes ---
 class FractalDropPath(nn.Module):
-    def __init__(self, drop_prob: float = 0.2):
+    def __init__(self, drop_prob: float = 0.0):
         super().__init__()
         self.drop_prob = drop_prob
 
@@ -53,20 +53,20 @@ class Net(nn.Module):
         n_classes = out_shape[0] if out_shape else 10
 
         self.entry = nn.Sequential(
-            nn.Conv2d(c_in, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(c_in, 16, kernel_size=3, padding=1),
+            nn.BatchNorm2d(16),
             nn.ReLU(inplace=True)
         )
 
-        # Dynamically build 2 fractal block(s) with channel doubling
+        # Dynamically build 3 fractal block(s) with channel doubling
         blocks = []
         pools = []
         trans_layers = []
-        cur_chan = 64
-        for i in range(2):
-            blocks.append(FractalBlock(2, cur_chan, 0.2))
+        cur_chan = 16
+        for i in range(3):
+            blocks.append(FractalBlock(2, cur_chan, 0.0))
             pools.append(nn.MaxPool2d(2))
-            if i < 2 - 1:
+            if i < 3 - 1:
                 next_chan = cur_chan * 2
                 trans_layers.append(nn.Sequential(
                     nn.Conv2d(cur_chan, next_chan, kernel_size=1),
@@ -109,12 +109,14 @@ class Net(nn.Module):
             lr=prm['lr'],       
             momentum=prm['momentum']
         )
+        self.max_batches = prm.get('max_batches', None)  # None = full dataset
         return self.optimizer
 
     def learn(self, train_data):
         self.train()
         for i, (inputs, labels) in enumerate(train_data):
-            if i >= 50: break # Limit to ~3% of data (50/1563 batches) for speed
+            # if self.max_batches and i >= self.max_batches: break  # Controlled via prm['max_batches']
+            if self.max_batches is not None and i >= self.max_batches: break
             inputs, labels = inputs.to(self.device), labels.to(self.device)
             self.optimizer.zero_grad()
             outputs = self(inputs)

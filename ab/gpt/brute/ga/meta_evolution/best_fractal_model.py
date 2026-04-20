@@ -8,7 +8,7 @@ def supported_hyperparameters():
 
 # --- Helper Classes ---
 class FractalDropPath(nn.Module):
-    def __init__(self, drop_prob: float = 0.0):
+    def __init__(self, drop_prob: float = 0.1):
         super().__init__()
         self.drop_prob = drop_prob
 
@@ -53,8 +53,8 @@ class Net(nn.Module):
         n_classes = out_shape[0] if out_shape else 10
 
         self.entry = nn.Sequential(
-            nn.Conv2d(c_in, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(c_in, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(inplace=True)
         )
 

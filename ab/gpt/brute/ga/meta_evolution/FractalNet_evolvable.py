@@ -5,11 +5,11 @@ import textwrap
 
 # --- 1. SEARCH SPACE ---
 SEARCH_SPACE = {
-    'n_columns': [1, 2],               # OOM fix: n_columns=3 alone uses ~16GB VRAM (3^depth recursive)
+    'n_columns': [2,3],               # OOM fix: n_columns=3 alone uses ~16GB VRAM (3^depth recursive)
     'base_channels': [16, 32, 64], 
     'dropout_prob': [0.0, 0.1, 0.2, 0.3],
-    'lr': [0.01, 0.005, 0.001],
-    'momentum': [0.85, 0.9, 0.95],
+    'lr': [0.01, 0.005,0.003,0.002, 0.001],
+    'momentum': [0.75,0.8, 0.85, 0.9, 0.92, 0.95],
     'n_blocks': [2, 3],                # OOM fix: avoids very deep sequential networks
 }
 

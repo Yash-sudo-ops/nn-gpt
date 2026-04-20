@@ -14,3 +14,4 @@ ga_history_backup/
 .agents/
 # Checkpoints
 fractal_ga_ckpt.pkl
+visualizations/

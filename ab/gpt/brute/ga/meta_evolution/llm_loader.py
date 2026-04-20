@@ -1,10 +1,28 @@
 import torch
+import json
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import PeftModel, LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import os
 
+def _load_model_config():
+    """Load model_config.json from the same directory. Raises error if missing."""
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_config.json")
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"[Config] model_config.json not found at {config_path}. Please create it.")
+    with open(config_path, "r") as f:
+        config = json.load(f)
+    print(f"[Config] Loaded model_config.json  (context_length={config.get('context_length', 'N/A')})")
+    return config
+
 class LocalLLMLoader:
-    def __init__(self, model_path, use_quantization=True, adapter_path=None):
+    def __init__(self, model_path=None, use_quantization=True, adapter_path=None):
+        # Load centralised config
+        self.config = _load_model_config()
+
+        # If no model_path provided, use the one from config
+        # self.model_path = model_path
+        if model_path is None:
+            model_path = self.config["base_model_name"]
         self.model_path = model_path
         
         print(f"Loading Model: {model_path}")
@@ -84,7 +102,10 @@ class LocalLLMLoader:
         # Ensure model is in eval mode for generation
         self.model.eval()
         
-        inputs = self.tokenizer(prompt, return_tensors="pt")
+        inputs = self.tokenizer(
+            prompt, return_tensors="pt", truncation=True,
+            max_length=self.config.get("context_length", 4096)
+        )
         if torch.cuda.is_available():
             inputs = inputs.to("cuda")
         
@@ -125,7 +146,8 @@ class LocalLLMLoader:
                 # Format: "Prompt... \n Completion..."
                 full_text = item['prompt'] + "\n" + item['completion']
                 
-                inputs = self.tokenizer(full_text, return_tensors="pt", truncation=True, max_length=2048)
+                # inputs = self.tokenizer(full_text, return_tensors="pt", truncation=True, max_length=2048)
+                inputs = self.tokenizer(full_text, return_tensors="pt", truncation=True, max_length=self.config.get("context_length", 4096))
                 if torch.cuda.is_available():
                     inputs = inputs.to("cuda")
                 

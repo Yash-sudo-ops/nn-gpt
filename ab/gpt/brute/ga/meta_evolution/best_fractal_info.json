@@ -1,15 +1,7 @@
 {
-    "timestamp": "2026-04-20T13:30:39.273406",
+    "timestamp": "2026-04-20T13:31:13.620482",
     "checksum": "2a6808818da133a5231bbc92681fab84",
     "fitness": 64.75,
     "chromosome": {
         "n_columns": 3,
-        "base_channels": 64,
-        "dropout_prob": 0.0,
-        "lr": 0.003,
-        "momentum": 0.85,
-        "n_blocks": 3
-    },
-    "source_stats_dir": "/a/mm/ab/gpt/brute/ga/meta_evolution/stats/img-classification_cifar-10_FractalNet-2a6808818da133a5231bbc92681fab84",
-    "copied_stats_dir": "/a/mm/ab/gpt/brute/ga/meta_evolution/best_fractal_stats/img-classification_cifar-10_FractalNet-2a6808818da133a5231bbc92681fab84"
-}
+        "base_channels": 

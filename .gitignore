@@ -31,4 +31,6 @@ test/
 ab/gpt/brute/ga/modular/FracStats/
 ab/gpt/brute/ga/modular/Fractals/
 ab/gpt/util/Testing.py
+ab/gpt/nn
+ab/nn
 .cache/*

@@ -165,6 +165,9 @@ class NNGenPrompt(Prompt):
                     [{'role': 'user', 'content': inst}, {'role': 'assistant', 'content': response}],
                     tokenize=False)
 
+                # print(f"Prompt: {inst}", flush=True)
+                # print(f"Output: {response}", flush=True)
+
                 dataframe.loc[len(dataframe)] = [inst, "", response, "", text]
 
         if prompt_lists:

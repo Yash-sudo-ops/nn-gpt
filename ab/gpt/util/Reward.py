@@ -98,6 +98,36 @@ def _env_is_set(name: str) -> bool:
     return raw is not None and raw != ""
 
 
+FORMAL_MULTI_HORIZON_REWARD_TARGET_METRIC = "formal_multi_horizon_acc"
+DEFAULT_FORMAL_REWARD_EPOCHS: tuple[int, ...] = (1, 5, 10)
+FORMAL_REWARD_SCORE_HORIZONS: tuple[int, ...] = (1, 5, 10)
+
+
+def _parse_formal_reward_epochs(raw: Optional[str]) -> list[int]:
+    parsed_epochs: list[int] = []
+    seen: set[int] = set()
+    for token in str(raw or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            epoch = int(token)
+        except (TypeError, ValueError):
+            continue
+        if epoch <= 0 or epoch in seen:
+            continue
+        parsed_epochs.append(epoch)
+        seen.add(epoch)
+    if not parsed_epochs:
+        return list(DEFAULT_FORMAL_REWARD_EPOCHS)
+    parsed_epochs.sort()
+    return parsed_epochs
+
+
+def _resolve_formal_reward_epochs() -> list[int]:
+    return _parse_formal_reward_epochs(os.environ.get("NNGPT_RL_FORMAL_REWARD_EPOCHS"))
+
+
 def _visible_cuda_device_tokens() -> Optional[list[str]]:
     raw = os.environ.get("CUDA_VISIBLE_DEVICES")
     if raw is None:
@@ -1511,6 +1541,12 @@ def _base_eval_result(
         "unfrozen_eval": None,
         "reward_target_metric": "frozen_test_acc",
         "reward_target_value": None,
+        "formal_reward_epochs": list(DEFAULT_FORMAL_REWARD_EPOCHS),
+        "formal_reward_max_epoch": int(max(DEFAULT_FORMAL_REWARD_EPOCHS)),
+        "formal_horizon_test_acc": {},
+        "formal_horizon_train_acc": {},
+        "formal_horizon_scores": {},
+        "formal_reward_target_value": None,
         "error_type": None,
         "error_stage": None,
         "error_context": None,
@@ -1558,6 +1594,12 @@ def _nested_eval_payload(
         "seed_accuracy_baseline": result.get("seed_accuracy_baseline"),
         "seed_train_acc_gap": result.get("seed_train_acc_gap"),
         "seed_train_acc_improved": result.get("seed_train_acc_improved"),
+        "formal_reward_epochs": list(result.get("formal_reward_epochs") or []),
+        "formal_reward_max_epoch": result.get("formal_reward_max_epoch"),
+        "formal_horizon_test_acc": dict(result.get("formal_horizon_test_acc") or {}),
+        "formal_horizon_train_acc": dict(result.get("formal_horizon_train_acc") or {}),
+        "formal_horizon_scores": dict(result.get("formal_horizon_scores") or {}),
+        "formal_reward_target_value": result.get("formal_reward_target_value"),
         "error": result.get("error"),
         "error_type": result.get("error_type"),
         "error_stage": result.get("error_stage"),
@@ -1576,10 +1618,16 @@ def _merge_dual_eval_results(
     frozen_train_acc = frozen_result.get("train_acc")
     frozen_test_acc = frozen_result.get("test_acc", frozen_result.get("val_metric"))
     reward_target_metric = str(getattr(cfg, "reward_target_metric", "frozen_test_acc") or "frozen_test_acc")
-    if reward_target_metric not in {"frozen_test_acc", "frozen_train_acc"}:
+    if reward_target_metric not in {
+        "frozen_test_acc",
+        "frozen_train_acc",
+        FORMAL_MULTI_HORIZON_REWARD_TARGET_METRIC,
+    }:
         reward_target_metric = "frozen_test_acc"
 
-    if reward_target_metric == "frozen_test_acc":
+    if reward_target_metric == FORMAL_MULTI_HORIZON_REWARD_TARGET_METRIC:
+        reward_target_value = _coerce_optional_metric_float(frozen_result.get("formal_reward_target_value"))
+    elif reward_target_metric == "frozen_test_acc":
         reward_target_value = frozen_test_acc
     else:
         reward_target_value = frozen_train_acc
@@ -1601,6 +1649,14 @@ def _merge_dual_eval_results(
             "unfrozen_eval": None,
             "reward_target_metric": reward_target_metric,
             "reward_target_value": reward_target_value,
+            "formal_reward_epochs": list(frozen_result.get("formal_reward_epochs") or []),
+            "formal_reward_max_epoch": frozen_result.get("formal_reward_max_epoch"),
+            "formal_horizon_test_acc": dict(frozen_result.get("formal_horizon_test_acc") or {}),
+            "formal_horizon_train_acc": dict(frozen_result.get("formal_horizon_train_acc") or {}),
+            "formal_horizon_scores": dict(frozen_result.get("formal_horizon_scores") or {}),
+            "formal_reward_target_value": _coerce_optional_metric_float(
+                frozen_result.get("formal_reward_target_value")
+            ),
         }
     )
     return merged
@@ -2345,6 +2401,7 @@ def _build_effective_eval_cfg(
         critic_fn=None,
         weights=None,
     )
+    base_reward_target_metric = str(getattr(base_cfg, "reward_target_metric", "frozen_test_acc") or "frozen_test_acc")
     return replace(
         base_cfg,
         device=device,
@@ -2361,11 +2418,14 @@ def _build_effective_eval_cfg(
         ),
         run_unfrozen_backbone_eval=False,
         reward_target_metric=(
-            str(getattr(base_cfg, "reward_target_metric", "frozen_test_acc") or "frozen_test_acc")
+            base_reward_target_metric
             if bool(getattr(base_cfg, "static_only", False))
+            else FORMAL_MULTI_HORIZON_REWARD_TARGET_METRIC
+            if bool(getattr(base_cfg, "formal_nn_eval", False))
+            and base_reward_target_metric == FORMAL_MULTI_HORIZON_REWARD_TARGET_METRIC
             else (
                 "frozen_train_acc"
-                if str(getattr(base_cfg, "reward_target_metric", "frozen_test_acc") or "frozen_test_acc") == "frozen_train_acc"
+                if base_reward_target_metric == "frozen_train_acc"
                 else "frozen_test_acc"
             )
         ),
@@ -2558,7 +2618,120 @@ def _extract_formal_epoch_stat_record(payload: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _formal_history_from_epoch_rows(epoch_rows: list[Dict[str, Any]]) -> Dict[str, Any]:
+def _formal_empty_horizon_summary(*, epochs_completed_for_horizon: int = 0) -> Dict[str, Any]:
+    return {
+        "test_acc": None,
+        "train_acc": None,
+        "best_epoch_loss": None,
+        "avg_epoch_loss": None,
+        "loss_drop": None,
+        "epochs_completed_for_horizon": int(max(0, epochs_completed_for_horizon)),
+        "reached_horizon": False,
+    }
+
+
+def _formal_horizon_summary(epoch_rows: list[Dict[str, Any]], horizon: int) -> Dict[str, Any]:
+    relevant_rows = [
+        dict(item)
+        for item in epoch_rows
+        if int(item.get("epoch", 0) or 0) <= int(horizon)
+    ]
+    epochs_completed_for_horizon = max(
+        [int(item.get("epoch", 0) or 0) for item in relevant_rows],
+        default=0,
+    )
+    if horizon <= 0 or epochs_completed_for_horizon < int(horizon):
+        return _formal_empty_horizon_summary(
+            epochs_completed_for_horizon=epochs_completed_for_horizon,
+        )
+    summary = _formal_history_core_from_epoch_rows(relevant_rows)
+    return {
+        "test_acc": summary.get("test_acc"),
+        "train_acc": summary.get("train_acc"),
+        "best_epoch_loss": summary.get("best_epoch_loss"),
+        "avg_epoch_loss": summary.get("avg_epoch_loss"),
+        "loss_drop": summary.get("loss_drop"),
+        "epochs_completed_for_horizon": int(horizon),
+        "reached_horizon": True,
+    }
+
+
+def _formal_horizon_payloads(
+    epoch_rows: list[Dict[str, Any]],
+    *,
+    configured_horizons: Optional[list[int]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    payloads: Dict[str, Dict[str, Any]] = {}
+    requested_horizons = list(configured_horizons or [])
+    ordered_horizons = sorted(
+        {
+            int(horizon)
+            for horizon in [*FORMAL_REWARD_SCORE_HORIZONS, *requested_horizons]
+            if int(horizon) > 0
+        }
+    )
+    for horizon in ordered_horizons:
+        payloads[str(horizon)] = _formal_horizon_summary(epoch_rows, horizon)
+    return payloads
+
+
+def _formal_horizon_metric_map(
+    payloads: Dict[str, Dict[str, Any]],
+    field_name: str,
+) -> Dict[str, Optional[float]]:
+    return {
+        str(horizon): _coerce_optional_metric_float((payloads.get(str(horizon)) or {}).get(field_name))
+        for horizon in FORMAL_REWARD_SCORE_HORIZONS
+    }
+
+
+def _formal_horizon_score_map(payloads: Dict[str, Dict[str, Any]]) -> Dict[str, float]:
+    def _completed(horizon: int) -> bool:
+        return bool((payloads.get(str(horizon)) or {}).get("reached_horizon"))
+
+    def _metric(horizon: int, field_name: str) -> Optional[float]:
+        if not _completed(horizon):
+            return None
+        return _coerce_optional_metric_float((payloads.get(str(horizon)) or {}).get(field_name))
+
+    acc1 = _metric(1, "test_acc")
+    acc5 = _metric(5, "test_acc")
+    acc10 = _metric(10, "test_acc")
+    train10 = _metric(10, "train_acc")
+
+    score1 = _clip(float(acc1 or 0.0), 0.0, 1.0) if acc1 is not None else 0.0
+    score5 = (
+        _clip(float(acc5) + 0.25 * max(0.0, float(acc5) - float(acc1 or 0.0)), 0.0, 1.0)
+        if acc5 is not None
+        else 0.0
+    )
+    overfit10 = (
+        max(0.0, float(train10) - float(acc10) - 0.08)
+        if train10 is not None and acc10 is not None
+        else 0.0
+    )
+    score10 = (
+        _clip(float(acc10) + 0.20 * max(0.0, float(acc10) - float(acc5 or 0.0)) - 0.50 * overfit10, 0.0, 1.0)
+        if acc10 is not None
+        else 0.0
+    )
+    return {
+        "1": float(score1),
+        "5": float(score5),
+        "10": float(score10),
+    }
+
+
+def _formal_multi_horizon_target_value(payloads: Dict[str, Dict[str, Any]]) -> float:
+    scores = _formal_horizon_score_map(payloads)
+    return float(
+        0.20 * float(scores.get("1", 0.0) or 0.0)
+        + 0.35 * float(scores.get("5", 0.0) or 0.0)
+        + 0.45 * float(scores.get("10", 0.0) or 0.0)
+    )
+
+
+def _formal_history_core_from_epoch_rows(epoch_rows: list[Dict[str, Any]]) -> Dict[str, Any]:
     if not epoch_rows:
         return {
             "loss_start": None,
@@ -2614,7 +2787,6 @@ def _formal_history_from_epoch_rows(epoch_rows: list[Dict[str, Any]]) -> Dict[st
         (item["test_accuracy"] for item in reversed(epoch_rows) if item.get("test_accuracy") is not None),
         None,
     )
-
     return {
         "loss_start": loss_start,
         "loss_end": loss_end,
@@ -2629,6 +2801,25 @@ def _formal_history_from_epoch_rows(epoch_rows: list[Dict[str, Any]]) -> Dict[st
         "train_acc": train_acc,
         "test_acc": test_acc,
     }
+
+
+def _formal_history_from_epoch_rows(epoch_rows: list[Dict[str, Any]]) -> Dict[str, Any]:
+    summary = _formal_history_core_from_epoch_rows(epoch_rows)
+    formal_reward_epochs = _resolve_formal_reward_epochs()
+    formal_horizons = _formal_horizon_payloads(
+        epoch_rows,
+        configured_horizons=formal_reward_epochs,
+    )
+    summary.update(
+        {
+            "formal_horizons": formal_horizons,
+            "formal_horizon_test_acc": _formal_horizon_metric_map(formal_horizons, "test_acc"),
+            "formal_horizon_train_acc": _formal_horizon_metric_map(formal_horizons, "train_acc"),
+            "formal_horizon_scores": _formal_horizon_score_map(formal_horizons),
+            "formal_reward_target_value": _formal_multi_horizon_target_value(formal_horizons),
+        }
+    )
+    return summary
 
 
 def _append_formal_epoch_row(epoch_rows: list[Dict[str, Any]], record: Dict[str, Any], epoch_hint: Any) -> None:
@@ -2700,6 +2891,8 @@ def _formal_eval_with_nn_dataset(
 ) -> Dict[str, Any]:
     effective_eval_limit_seconds = _effective_eval_limit_seconds(cfg)
     epoch_limit_minutes = _resolve_formal_epoch_limit_minutes(cfg)
+    formal_reward_epochs = _resolve_formal_reward_epochs()
+    formal_reward_max_epoch = max(formal_reward_epochs) if formal_reward_epochs else int(max(DEFAULT_FORMAL_REWARD_EPOCHS))
     formal_trace_context: Dict[str, Any] = {
         "freeze_backbones": bool(freeze_backbones),
         "formal_task": str(getattr(cfg, "formal_task", "img-classification")),
@@ -2708,9 +2901,12 @@ def _formal_eval_with_nn_dataset(
         "backbone_model_names": list(backbone_model_names),
         "code_trace": _formal_eval_code_trace(code),
         "epoch_limit_minutes": epoch_limit_minutes,
+        "formal_reward_epochs": list(formal_reward_epochs),
+        "formal_reward_max_epoch": int(formal_reward_max_epoch),
     }
     safe_prm = dict(prm)
     safe_prm["freeze_backbones"] = bool(freeze_backbones)
+    safe_prm["epoch"] = int(formal_reward_max_epoch)
     formal_trace_context.update(
         {
             "transform": str(safe_prm.get("transform")),
@@ -2768,6 +2964,8 @@ def _formal_eval_with_nn_dataset(
                 "estimated_total_seconds": estimated_total_seconds,
                 "timed_out": timed_out,
                 "error": error_message,
+                "formal_reward_epochs": list(formal_reward_epochs),
+                "formal_reward_max_epoch": int(formal_reward_max_epoch),
             },
         }
         return _apply_error_trace(
@@ -2955,6 +3153,14 @@ def _formal_eval_with_nn_dataset(
                 "latency_ms": latency_ms,
                 "params_m": params_m,
                 "estimated_total_seconds": formal_duration_seconds,
+                "formal_reward_epochs": list(formal_reward_epochs),
+                "formal_reward_max_epoch": int(formal_reward_max_epoch),
+                "formal_horizon_test_acc": dict(formal_history.get("formal_horizon_test_acc") or {}),
+                "formal_horizon_train_acc": dict(formal_history.get("formal_horizon_train_acc") or {}),
+                "formal_horizon_scores": dict(formal_history.get("formal_horizon_scores") or {}),
+                "formal_reward_target_value": _coerce_optional_metric_float(
+                    formal_history.get("formal_reward_target_value")
+                ),
             },
         }
     except Exception as exc:

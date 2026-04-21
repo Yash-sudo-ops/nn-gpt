@@ -81,6 +81,7 @@ from ab.gpt.util.Const import conf_train_dir, conf_test_dir, epoch_dir, new_nn_f
 from ab.nn.util.Util import create_file
 from ab.gpt.util.Reward import (
     EvalConfig,
+    FORMAL_MULTI_HORIZON_REWARD_TARGET_METRIC,
     PersistentEvalWorkerError,
     evaluate_code_and_reward,
     evaluate_code_and_reward_batch,
@@ -252,8 +253,9 @@ STAGE1_GATE_UNIQUE_DISCOVERY_FAMILIES_MIN = 6
 STAGE1_FORCE_PROMOTION_EXECUTABLE_MIN = 800
 STAGE1_FORCE_PROMOTION_DISCOVERY_MIN = 8
 STAGE1_FORCE_PROMOTION_UNIQUE_DISCOVERY_FAMILIES_MIN = 6
-STAGE2_GATE_FORMAL_SUCCESS_MIN = 16
-STAGE2_GATE_UNIQUE_FORMAL_FAMILIES_MIN = 6
+STAGE2_GATE_MIN_REWARD_TARGET = 0.90
+STAGE2_GATE_MIN_TARGET_COUNT = 16
+STAGE2_GATE_MIN_UNIQUE_TARGET_FAMILIES = 6
 STAGE2_GATE_IMPROVING_GROUPS_REQUIRED = 2
 STAGE2_GATE_MAX_DOMINANT_DESCRIPTOR_SHARE = 0.50
 STAGE_RECOVERY_DOMINANT_SHARE_THRESHOLD = 0.55
@@ -265,7 +267,8 @@ MAX_STAGE_GROUP_HISTORY = 512
 TRAINING_CONTEXT_WINDOW = 50
 TRAINING_CONTEXT_MIN_POINTS = 8
 STATIC_STAGE_REWARD_TARGET_METRIC = "stage1_static_score"
-FORMAL_STAGE_REWARD_TARGET_METRIC = "frozen_test_acc"
+FORMAL_STAGE_REWARD_TARGET_METRIC = FORMAL_MULTI_HORIZON_REWARD_TARGET_METRIC
+FORMAL_SUCCESS_SIGNAL_BONUS = 0.02
 STAGE1_EXECUTABLE_BONUS = 0.10
 STAGE1_DISCOVERY_FAMILY_BONUS = 0.42
 STAGE1_DISCOVERY_GRAPH_BONUS = 0.20
@@ -2106,13 +2109,14 @@ def _stage2_gate_ready() -> bool:
     if current_entry_group_count < STAGE_REFERENCE_MIN_GROUPS[STAGE2_FORMAL_EXPLORE]:
         return False
     formal_rows = [item for item in recent_generations if bool(item.get("formal_success_candidate"))]
-    unique_formal_families = len(_family_hash_set(formal_rows, key="family_hash"))
+    qualified_rows = _stage2_target_qualified_rows(recent_generations)
+    unique_target_families = len(_family_hash_set(qualified_rows, key="family_hash"))
     mean_dominant_share = _mean_dominant_share(recent_groups)
     mean_dominant_descriptor_share = _mean_dominant_descriptor_share(recent_groups)
     improving_groups = _count_group_improvements(recent_improvement_groups)
     return bool(
-        len(formal_rows) >= STAGE2_GATE_FORMAL_SUCCESS_MIN
-        and unique_formal_families >= STAGE2_GATE_UNIQUE_FORMAL_FAMILIES_MIN
+        len(qualified_rows) >= STAGE2_GATE_MIN_TARGET_COUNT
+        and unique_target_families >= STAGE2_GATE_MIN_UNIQUE_TARGET_FAMILIES
         and improving_groups >= STAGE2_GATE_IMPROVING_GROUPS_REQUIRED
         and mean_dominant_share is not None
         and mean_dominant_share <= 0.45
@@ -2147,6 +2151,7 @@ def _stage_gate_snapshot() -> Dict[str, Any]:
     recent_groups = _recent_stage_group_window(stage_name, 5)
     discovery_rows = [item for item in recent_generations if bool(item.get("discovery_candidate"))]
     formal_rows = [item for item in recent_generations if bool(item.get("formal_success_candidate"))]
+    qualified_target_rows = _stage2_target_qualified_rows(recent_generations)
     return {
         "stage_name": stage_name,
         "stage_index": RL_STAGE_TO_INDEX.get(stage_name, 0),
@@ -2156,6 +2161,8 @@ def _stage_gate_snapshot() -> Dict[str, Any]:
         "recent_unique_discovery_families": len(_family_hash_set(discovery_rows, key="family_hash")),
         "recent_formal_success_count": len(formal_rows),
         "recent_unique_formal_families": len(_family_hash_set(formal_rows, key="family_hash")),
+        "recent_target_qualified_count": len(qualified_target_rows),
+        "recent_unique_target_families": len(_family_hash_set(qualified_target_rows, key="family_hash")),
         "recent_mean_dominant_family_share": _mean_dominant_share(recent_groups),
         "recent_mean_dominant_descriptor_share": _mean_dominant_descriptor_share(recent_groups),
         "recent_improving_groups": _count_group_improvements(_recent_stage_group_window(stage_name, 4)),
@@ -3432,6 +3439,13 @@ def _is_trainable_candidate(res: Dict[str, Any], graph_info) -> bool:
     )
 
 
+def _has_completed_formal_epoch(res: Dict[str, Any]) -> bool:
+    try:
+        return int(res.get("epochs_completed", 0) or 0) >= 1
+    except (TypeError, ValueError):
+        return False
+
+
 def _is_executable_candidate(res: Dict[str, Any], graph_info) -> bool:
     return bool(
         graph_info
@@ -3439,6 +3453,20 @@ def _is_executable_candidate(res: Dict[str, Any], graph_info) -> bool:
         and res.get("built_ok")
         and res.get("forward_shape_ok")
     )
+
+
+def _stage2_target_qualified_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    qualified_rows: List[Dict[str, Any]] = []
+    for item in rows:
+        if not bool(item.get("executable_candidate")):
+            continue
+        if not _has_completed_formal_epoch(item):
+            continue
+        reward_target_value = _optional_float(item.get("reward_target_value"))
+        if reward_target_value is None or float(reward_target_value) < STAGE2_GATE_MIN_REWARD_TARGET:
+            continue
+        qualified_rows.append(item)
+    return qualified_rows
 
 
 def _apply_trainability_clamp(res: Dict[str, Any], reward_value: float, graph_info) -> float:
@@ -3919,7 +3947,9 @@ def base_discovery_reward_fn(
     unfrozen_test_acc = _optional_float(res.get("unfrozen_test_acc"))
     train_acc = frozen_train_acc
     test_acc = frozen_test_acc
-    reward_target_value = frozen_test_acc
+    reward_target_value = _result_reward_target_value(res)
+    if reward_target_value is None and stage_name != STAGE1_STRUCTURE_EXPLORE:
+        reward_target_value = frozen_test_acc
     goal_key = primary_goal_key(prompt_goal_tags or [])
     best_reward_target_for_goal = best_reward_target_by_goal.get(goal_key)
     group_train_acc_gain = None
@@ -3944,6 +3974,7 @@ def base_discovery_reward_fn(
     r_history_context = 0.0
     r_no_progress_penalty = 0.0
     r_descriptor_diversity = 0.0
+    r_formal_success_signal = 0.0
     stage1_validity_scale = 0.0
     dominant_family_repeat = False
     dominant_descriptor_repeat = False
@@ -3951,6 +3982,7 @@ def base_discovery_reward_fn(
     descriptor_reward_cap_applied = False
     executable_candidate = _is_executable_candidate(res, graph_info)
     formal_success_candidate = _is_trainable_candidate(res, graph_info)
+    has_formal_epoch = _has_completed_formal_epoch(res)
     discovery_candidate = False
     goal_tag_hit_count, goal_tag_total_count, goal_tag_hit_rate = _goal_tag_match_stats(graph_info, prompt_goal_tags)
     effective_group_baseline_reward_target_acc = (
@@ -4148,7 +4180,6 @@ def base_discovery_reward_fn(
         total_reward = _clip(r_primary + r_tiebreak, -2.0, 2.0)
         total_reward = _apply_executability_clamp(res, total_reward, graph_info)
     else:
-        reward_target_value = frozen_test_acc
         if (train_acc is not None) and (group_baseline_train_acc is not None) and (not group_warmup):
             group_train_acc_gain = float(train_acc - group_baseline_train_acc)
             group_train_acc_improved = bool(group_train_acc_gain >= GROUP_IMPROVEMENT_DELTA)
@@ -4156,7 +4187,7 @@ def base_discovery_reward_fn(
             group_reward_target_gain = float(reward_target_value - effective_group_baseline_reward_target_acc)
             group_reward_target_improved = bool(group_reward_target_gain >= GROUP_IMPROVEMENT_DELTA)
 
-        if formal_success_candidate and reward_target_value is not None:
+        if has_formal_epoch and reward_target_value is not None:
             train_acc_value = float(train_acc or 0.0)
             reward_target_float = float(reward_target_value)
             r_dense = stage_profile["dense_scale"] * _clip(
@@ -4164,6 +4195,8 @@ def base_discovery_reward_fn(
                 0.02,
                 0.22,
             )
+            if formal_success_candidate:
+                r_formal_success_signal = FORMAL_SUCCESS_SIGNAL_BONUS
             if (not group_warmup) and (group_baseline_train_acc is not None):
                 prev_target_train_acc = float(group_baseline_train_acc) + GROUP_IMPROVEMENT_DELTA
             if (not group_warmup) and (best_closed_group_mean_train_acc is not None):
@@ -4270,6 +4303,7 @@ def base_discovery_reward_fn(
 
         r_primary = (
             r_dense
+            + r_formal_success_signal
             + r_prev_group
             + r_best_group
             + r_goal_best
@@ -4286,27 +4320,21 @@ def base_discovery_reward_fn(
         )
         r_tiebreak = r_goal_match
         total_reward = _clip(r_primary + r_tiebreak, -2.0, 2.0)
-        if formal_success_candidate and prev_target_reward_target_acc is not None and not beat_prev_target:
+        if has_formal_epoch and prev_target_reward_target_acc is not None and not beat_prev_target:
             total_reward = min(total_reward, stage_profile["non_improving_cap"])
-        if formal_success_candidate and dominant_descriptor_repeat:
+        if has_formal_epoch and dominant_descriptor_repeat:
             total_reward = min(total_reward, stage_profile["descriptor_non_improving_cap"])
             descriptor_reward_cap_applied = True
-        if stage_name == STAGE2_FORMAL_EXPLORE:
-            total_reward = _apply_executability_clamp(res, total_reward, graph_info)
-        else:
-            total_reward = _apply_trainability_clamp(res, total_reward, graph_info)
+        total_reward = _apply_executability_clamp(res, total_reward, graph_info)
 
     reward_target_value_for_payload = reward_target_value
     reward_metric_for_payload = stage_reward_metric
 
     warmup_dense_reward = None
-    if stage_name != STAGE1_STRUCTURE_EXPLORE and group_warmup and formal_success_candidate:
+    if stage_name != STAGE1_STRUCTURE_EXPLORE and group_warmup and has_formal_epoch:
         warmup_dense_reward = _compute_warmup_dense_reward(reward_target_value)
         total_reward = float(warmup_dense_reward or 0.0)
-        if stage_name == STAGE2_FORMAL_EXPLORE:
-            total_reward = _apply_executability_clamp(res, total_reward, graph_info)
-        else:
-            total_reward = _apply_trainability_clamp(res, total_reward, graph_info)
+        total_reward = _apply_executability_clamp(res, total_reward, graph_info)
 
     res['reward'] = total_reward
     res['test_acc'] = test_acc
@@ -4347,6 +4375,7 @@ def base_discovery_reward_fn(
     res['r_structure_group'] = r_structure_group
     res['r_structure_archive'] = r_structure_archive
     res['r_descriptor_diversity'] = r_descriptor_diversity
+    res['r_formal_success_signal'] = r_formal_success_signal
     res['r_batch_elite'] = r_batch_elite
     res['r_repeat_family'] = r_repeat_family
     res['r_plain_fuse_penalty'] = r_plain_fuse_penalty
@@ -4387,6 +4416,7 @@ def base_discovery_reward_fn(
         'r_tiebreak': r_tiebreak,
         'r_trainset_novelty': r_trainset_novelty,
         'r_dense': r_dense,
+        'r_formal_success_signal': r_formal_success_signal,
         'r_prev_group': r_prev_group,
         'r_best_group': r_best_group,
         'r_goal_best': r_goal_best,
@@ -4526,7 +4556,9 @@ def _apply_batch_elite_bonuses(scored_results: List[Dict[str, Any]], group_conte
         res = item["result"]
         graph_info = item["graph_info"]
         reward_target_value = _result_reward_target_value(res)
-        if not _is_trainable_candidate(res, graph_info):
+        if not _is_executable_candidate(res, graph_info):
+            continue
+        if not _has_completed_formal_epoch(res):
             continue
         if reward_target_value is None:
             continue
@@ -5002,12 +5034,7 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
             and res.get("built_ok")
             and res.get("forward_shape_ok")
             and res.get("backward_ok")
-            and res.get("loss_drop_ok")
-            and not res.get("group_warmup")
-            and float(res.get("group_reward_target_gain") or 0.0) >= GROUP_IMPROVEMENT_DELTA
-            and saved_graph_counts[graph_info.graph_hash] == 0
-            and saved_family_hash_counts[graph_info.family_hash] < family_save_cap(graph_info)
-            and get_goal_counter(saved_goal_family_hash_counts, goal_key)[graph_info.family_hash] < goal_family_save_cap(graph_info)
+            and _has_completed_formal_epoch(res)
         )
 
         if should_save:
@@ -5046,6 +5073,12 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
                 "reward": score,
                 "reward_target_metric": str(res.get("reward_target_metric") or ""),
                 "reward_target_value": reward_target_value,
+                "formal_reward_epochs": list(res.get("formal_reward_epochs") or []),
+                "formal_reward_max_epoch": int(res.get("formal_reward_max_epoch", 0) or 0),
+                "formal_horizon_test_acc": dict(res.get("formal_horizon_test_acc") or {}),
+                "formal_horizon_train_acc": dict(res.get("formal_horizon_train_acc") or {}),
+                "formal_horizon_scores": dict(res.get("formal_horizon_scores") or {}),
+                "formal_reward_target_value": _optional_float(res.get("formal_reward_target_value")),
                 "loss_end": _optional_float(res.get("loss_end")),
                 "best_epoch_loss": _optional_float(res.get("best_epoch_loss")),
                 "avg_epoch_loss": _optional_float(res.get("avg_epoch_loss")),

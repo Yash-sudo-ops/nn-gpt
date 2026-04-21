@@ -58,7 +58,7 @@ def evaluate_delimited_formulas(text: str, para_dict: dict) -> str:
     return re.sub(pattern, replace_match, text)
 
 
-class NNGenPrompt(Prompt):
+class NNGenPromptPrun(Prompt):
     def __init__(self, max_len: int, tokenizer: PreTrainedTokenizerBase, prompts_path):
         super().__init__(max_len, tokenizer)
         self.prompts_path = prompts_path

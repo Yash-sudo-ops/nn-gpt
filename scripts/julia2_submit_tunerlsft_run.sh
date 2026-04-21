@@ -13,10 +13,10 @@ COMMIT_HASH=""
 COMMIT_SUBJECT=""
 PARTITION="gpu_computervision_long"
 QOS=""
-FINALIZE_PARTITION=""
+FINALIZE_PARTITION="small_cpu"
 FINALIZE_QOS=""
 TIME_LIMIT=""
-GPU_COUNT=""
+GPU_COUNT="4"
 MEMORY=""
 CPUS=""
 JOB_NAME=""
@@ -36,10 +36,10 @@ Options:
   --commit-subject TEXT        可选，归档文档写入指定 commit subject
   --partition PARTITION        sbatch 分区，默认 gpu_computervision_long
   --qos QOS                    可选 QoS
-  --finalize-partition P       finalize job 分区，默认跟主 job 一致
+  --finalize-partition P       finalize job 分区，默认 small_cpu
   --finalize-qos QOS           finalize job QoS，默认跟主 job 一致
   --time HH:MM:SS              可选 time limit
-  --gpus N                     可选 GPU 数
+  --gpus N                     可选 GPU 数，默认 4
   --mem SIZE                   可选内存，如 64G
   --cpus N                     可选 cpus-per-task
   --job-name NAME              可选 job name
@@ -52,7 +52,7 @@ Examples:
     --run-note '验证 10 epoch 正式脚本' \
     --partition gpu_computervision \
     --qos normal \
-    --gpus 1 \
+    --gpus 4 \
     --env NNGPT_SFT_DATASET_LIMIT=1 \
     --env NNGPT_SFT_NUM_GENERATIONS=2
 EOF
@@ -181,9 +181,6 @@ fi
 RUN_LABEL_SLUG="$(slugify "${RUN_LABEL}")"
 if [[ -z "${RUN_ID}" ]]; then
   RUN_ID="$(generate_run_id "${RUN_LABEL_SLUG}")"
-fi
-if [[ -z "${FINALIZE_PARTITION}" ]]; then
-  FINALIZE_PARTITION="${PARTITION}"
 fi
 if [[ -z "${FINALIZE_QOS}" ]]; then
   FINALIZE_QOS="${QOS}"

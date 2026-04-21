@@ -6,7 +6,6 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=80G
 #SBATCH --gres=gpu:2
-#SBATCH --time=24:00:00
 #SBATCH --signal=TERM@300
 #SBATCH --chdir=/home/s471802/nn-gpt
 #SBATCH --open-mode=append

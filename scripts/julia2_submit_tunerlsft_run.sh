@@ -53,7 +53,6 @@ Examples:
     --partition gpu_computervision \
     --qos normal \
     --gpus 1 \
-    --time 02:00:00 \
     --env NNGPT_SFT_DATASET_LIMIT=1 \
     --env NNGPT_SFT_NUM_GENERATIONS=2
 EOF

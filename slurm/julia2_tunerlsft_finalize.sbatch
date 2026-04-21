@@ -5,7 +5,6 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=2G
-#SBATCH --time=00:10:00
 #SBATCH --chdir=/home/s471802/nn-gpt
 #SBATCH --open-mode=append
 #SBATCH --output=/home/s471802/nn-gpt/slurm_logs/%x-%j.out

@@ -139,8 +139,8 @@ cd "${WORK_DIR}"
 NN_DATASET_IMPORT_PATH="$(
   python3 - <<'PY'
 from pathlib import Path
-import ab.nn
-print(Path(ab.nn.__file__).resolve())
+import ab.nn.util
+print(Path(ab.nn.util.__file__).resolve())
 PY
 )"
 echo "nn-dataset import: ${NN_DATASET_IMPORT_PATH}"

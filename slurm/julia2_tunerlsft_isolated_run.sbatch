@@ -27,6 +27,7 @@ WORK_BASE="/tmp/${USER}/${NNGPT_RUN_ID}"
 WORK_DIR="${WORK_BASE}/nn-gpt"
 SLURM_DIR="${RUN_ROOT}/slurm"
 SOURCE_DIR="${REPO_ROOT}"
+NN_DATASET_ROOT="${NNGPT_NN_DATASET_ROOT:-/home/s471802/nn-dataset}"
 
 mkdir -p "${SLURM_DIR}" "${RUN_ROOT}/out"
 source /home/s471802/.venv/bin/activate
@@ -43,9 +44,16 @@ if [ -z "${MASTER_PORT:-}" ]; then
 fi
 export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
 
+if [ ! -d "${NN_DATASET_ROOT}/ab/nn" ]; then
+  echo "nn-dataset source not found: ${NN_DATASET_ROOT}/ab/nn" >&2
+  exit 1
+fi
+export PYTHONPATH="${NN_DATASET_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+
 rm -rf "${WORK_DIR}"
 mkdir -p "${WORK_BASE}"
 rsync -a \
+  --exclude 'ab/nn' \
   --exclude '.git' \
   --exclude 'grpo_backbone_outputs' \
   --exclude 'rl_output' \
@@ -134,6 +142,7 @@ echo "Resume mode: ${resume_mode}"
 echo "Resume source: ${resume_source}"
 echo "Master addr: ${MASTER_ADDR}"
 echo "Master port: ${MASTER_PORT}"
+echo "nn-dataset root: ${NN_DATASET_ROOT}"
 
 cd "${WORK_DIR}"
 NN_DATASET_IMPORT_PATH="$(

@@ -2735,6 +2735,10 @@ def _formal_horizon_metric_map(
     }
 
 
+def _clip(value: float, lower: float, upper: float) -> float:
+    return float(max(lower, min(upper, value)))
+
+
 def _formal_horizon_score_map(payloads: Dict[str, Dict[str, Any]]) -> Dict[str, float]:
     def _completed(horizon: int) -> bool:
         return bool((payloads.get(str(horizon)) or {}).get("reached_horizon"))

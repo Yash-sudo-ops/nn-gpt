@@ -48,7 +48,6 @@ if [ ! -d "${NN_DATASET_ROOT}/ab/nn" ]; then
   echo "nn-dataset source not found: ${NN_DATASET_ROOT}/ab/nn" >&2
   exit 1
 fi
-export PYTHONPATH="${NN_DATASET_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 rm -rf "${WORK_DIR}"
 mkdir -p "${WORK_BASE}"
@@ -63,6 +62,12 @@ rsync -a \
   --exclude '__pycache__' \
   --exclude '*.pyc' \
   "${SOURCE_DIR}/" "${WORK_DIR}/"
+
+mkdir -p "${WORK_DIR}/ab"
+rsync -a --delete \
+  --exclude '__pycache__' \
+  --exclude '*.pyc' \
+  "${NN_DATASET_ROOT}/ab/nn/" "${WORK_DIR}/ab/nn/"
 
 rm -rf "${WORK_DIR}/out"
 ln -s "${RUN_ROOT}/out" "${WORK_DIR}/out"

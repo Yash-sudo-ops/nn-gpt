@@ -27,6 +27,7 @@ WORK_BASE="/tmp/${USER}/${NNGPT_RUN_ID}"
 WORK_DIR="${WORK_BASE}/nn-gpt"
 SLURM_DIR="${RUN_ROOT}/slurm"
 SOURCE_DIR="${REPO_ROOT}"
+NN_DATASET_ROOT="${NNGPT_NN_DATASET_ROOT:-/home/s471802/nn-dataset}"
 
 mkdir -p "${SLURM_DIR}" "${RUN_ROOT}/out"
 source /home/s471802/.venv/bin/activate
@@ -55,6 +56,16 @@ rsync -a \
   --exclude '__pycache__' \
   --exclude '*.pyc' \
   "${SOURCE_DIR}/" "${WORK_DIR}/"
+
+if [ ! -d "${NN_DATASET_ROOT}/ab/nn" ]; then
+  echo "nn-dataset source not found: ${NN_DATASET_ROOT}/ab/nn" >&2
+  exit 1
+fi
+mkdir -p "${WORK_DIR}/ab"
+rsync -a --delete \
+  --exclude '__pycache__' \
+  --exclude '*.pyc' \
+  "${NN_DATASET_ROOT}/ab/nn/" "${WORK_DIR}/ab/nn/"
 
 rm -rf "${WORK_DIR}/out"
 ln -s "${RUN_ROOT}/out" "${WORK_DIR}/out"

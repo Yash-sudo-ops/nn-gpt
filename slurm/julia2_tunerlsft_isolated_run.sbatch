@@ -32,6 +32,13 @@ mkdir -p "${SLURM_DIR}" "${RUN_ROOT}/out"
 source /home/s471802/.venv/bin/activate
 cd "${REPO_ROOT}"
 
+: "${NNGPT_NN_DATASET_ROOT:=/home/s471802/nn-dataset}"
+if [ ! -d "${NNGPT_NN_DATASET_ROOT}" ]; then
+  echo "nn-dataset root not found: ${NNGPT_NN_DATASET_ROOT}" >&2
+  exit 1
+fi
+export PYTHONPATH="${NNGPT_NN_DATASET_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
 if [ -z "${MASTER_PORT:-}" ]; then

@@ -98,17 +98,6 @@ def _env_is_set(name: str) -> bool:
     return raw is not None and raw != ""
 
 
-def _optional_positive_int_env(name: str) -> Optional[int]:
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return None
-    try:
-        parsed = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
-
-
 FORMAL_MULTI_HORIZON_REWARD_TARGET_METRIC = "formal_multi_horizon_acc"
 DEFAULT_FORMAL_REWARD_EPOCHS: tuple[int, ...] = (1, 5, 10)
 FORMAL_REWARD_SCORE_HORIZONS: tuple[int, ...] = (1, 5, 10)
@@ -1767,22 +1756,11 @@ def _adapt_formal_eval_inputs_for_worker(
     cfg: "EvalConfig",
     prm: Dict[str, Any],
 ) -> tuple["EvalConfig", Dict[str, Any]]:
-    next_cfg = cfg
-    next_prm = dict(prm)
-
-    batch_override = _optional_positive_int_env("NNGPT_RL_FORMAL_BATCH_SIZE")
-    if batch_override is not None:
-        next_cfg, next_prm = _replace_eval_batch_size(
-            next_cfg,
-            next_prm,
-            batch_size=batch_override,
-        )
-
-    num_workers_override = _optional_positive_int_env("NNGPT_RL_FORMAL_NUM_WORKERS")
-    if num_workers_override is not None:
-        next_prm["num_workers"] = int(num_workers_override)
-
-    return next_cfg, next_prm
+    # Keep the configured formal-eval batch unchanged. The previous heuristic
+    # probed live worker memory and preemptively shrank batch / disabled
+    # unfrozen eval, which was both noisy and misleading in single-process
+    # reward setups. We still retain the actual CUDA OOM retry path below.
+    return cfg, dict(prm)
 
 
 def _run_formal_eval_with_backoff(
@@ -1799,41 +1777,20 @@ def _run_formal_eval_with_backoff(
         1,
         int(active_prm.get("batch", getattr(active_cfg, "default_batch_size", 32)) or 32),
     )
-    min_batch_size = max(
-        1,
-        int(_optional_positive_int_env("NNGPT_RL_FORMAL_MIN_BATCH_SIZE") or 4),
+    attempt_cfg, attempt_prm = _replace_eval_batch_size(
+        active_cfg,
+        active_prm,
+        batch_size=attempt_batch_size,
     )
-
-    while True:
-        attempt_cfg, attempt_prm = _replace_eval_batch_size(
-            active_cfg,
-            active_prm,
-            batch_size=attempt_batch_size,
-        )
-        result = _formal_eval_with_nn_dataset(
-            code,
-            prm=attempt_prm,
-            cfg=attempt_cfg,
-            freeze_backbones=freeze_backbones,
-            seed_accuracy_baseline=seed_accuracy_baseline,
-            backbone_model_names=backbone_model_names,
-        )
-        if not _is_cuda_oom_error_message(result.get("error")):
-            return result, attempt_cfg, attempt_prm
-
-        next_batch_size = _halve_batch_size(
-            attempt_batch_size,
-            min_batch_size=min_batch_size,
-        )
-        if next_batch_size is None:
-            return result, attempt_cfg, attempt_prm
-
-        print(
-            "[Formal Eval Retry] CUDA OOM during formal eval, "
-            f"retrying with batch {attempt_batch_size} -> {next_batch_size}",
-            flush=True,
-        )
-        attempt_batch_size = next_batch_size
+    result = _formal_eval_with_nn_dataset(
+        code,
+        prm=attempt_prm,
+        cfg=attempt_cfg,
+        freeze_backbones=freeze_backbones,
+        seed_accuracy_baseline=seed_accuracy_baseline,
+        backbone_model_names=backbone_model_names,
+    )
+    return result, attempt_cfg, attempt_prm
 
 
 def _preview_eval_request(
@@ -2662,114 +2619,6 @@ def _restore_nn_dataset_dataroll_patch(patch_token: Optional[Tuple[type, Any, An
     data_roll_cls.__next__ = original_next
 
 
-def _patch_nn_dataset_loader_utils_for_reward() -> Optional[Dict[str, Any]]:
-    try:
-        import ab.nn.util.Train as nn_train  # type: ignore
-        import ab.nn.util.Util as nn_util  # type: ignore
-    except Exception:
-        return None
-
-    original_train_loader = getattr(nn_train, "train_loader_f", None)
-    original_test_loader = getattr(nn_train, "test_loader_f", None)
-    original_util_train_loader = getattr(nn_util, "train_loader_f", None)
-    original_util_test_loader = getattr(nn_util, "test_loader_f", None)
-    if (
-        original_train_loader is None
-        or original_test_loader is None
-        or original_util_train_loader is None
-        or original_util_test_loader is None
-    ):
-        return None
-
-    pin_memory = bool(torch.cuda.is_available()) and _safe_bool_env(
-        "NNGPT_RL_FORMAL_PIN_MEMORY",
-        True,
-    )
-    persistent_workers = _safe_bool_env(
-        "NNGPT_RL_FORMAL_PERSISTENT_WORKERS",
-        True,
-    )
-    prefetch_factor = _optional_positive_int_env("NNGPT_RL_FORMAL_PREFETCH_FACTOR")
-
-    def _resolved_num_workers(dataset: Any, default_num_workers: int) -> int:
-        value = getattr(dataset, "num_workers", default_num_workers)
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            parsed = int(default_num_workers or 0)
-        return max(0, parsed)
-
-    def _build_loader(dataset: Any, batch: int, num_workers: int, *, shuffle: bool) -> DataLoader:
-        resolved_num_workers = _resolved_num_workers(dataset, num_workers)
-        loader_kwargs: Dict[str, Any] = {
-            "batch_size": batch,
-            "shuffle": shuffle,
-            "num_workers": resolved_num_workers,
-            "collate_fn": getattr(dataset, "collate_fn", None),
-        }
-        if pin_memory:
-            loader_kwargs["pin_memory"] = True
-        if resolved_num_workers > 0:
-            if persistent_workers:
-                loader_kwargs["persistent_workers"] = True
-            if prefetch_factor is not None:
-                loader_kwargs["prefetch_factor"] = max(1, int(prefetch_factor))
-        return DataLoader(dataset, **loader_kwargs)
-
-    def _train_loader(dataset: Any, batch: int, num_workers: int) -> DataLoader:
-        return _build_loader(dataset, batch, num_workers, shuffle=True)
-
-    def _test_loader(dataset: Any, batch: int, num_workers: int) -> DataLoader:
-        return _build_loader(dataset, batch, num_workers, shuffle=False)
-
-    nn_train.train_loader_f = _train_loader
-    nn_train.test_loader_f = _test_loader
-    nn_util.train_loader_f = _train_loader
-    nn_util.test_loader_f = _test_loader
-    return {
-        "nn_train": nn_train,
-        "nn_util": nn_util,
-        "train_loader_f": original_train_loader,
-        "test_loader_f": original_test_loader,
-        "util_train_loader_f": original_util_train_loader,
-        "util_test_loader_f": original_util_test_loader,
-    }
-
-
-def _restore_nn_dataset_loader_utils_patch(patch_token: Optional[Dict[str, Any]]) -> None:
-    if not isinstance(patch_token, dict):
-        return
-    nn_train = patch_token.get("nn_train")
-    nn_util = patch_token.get("nn_util")
-    if nn_train is not None:
-        nn_train.train_loader_f = patch_token.get("train_loader_f")
-        nn_train.test_loader_f = patch_token.get("test_loader_f")
-    if nn_util is not None:
-        nn_util.train_loader_f = patch_token.get("util_train_loader_f")
-        nn_util.test_loader_f = patch_token.get("util_test_loader_f")
-
-
-def _configure_formal_eval_cuda_backend(device: str) -> Optional[Dict[str, Any]]:
-    if (not torch.cuda.is_available()) or (not str(device).startswith("cuda")):
-        return None
-
-    previous_state = {
-        "cudnn_benchmark": bool(torch.backends.cudnn.benchmark),
-    }
-    if _safe_bool_env("NNGPT_RL_FORMAL_CUDNN_BENCHMARK", True):
-        torch.backends.cudnn.benchmark = True
-    return previous_state
-
-
-def _restore_formal_eval_cuda_backend(state: Optional[Dict[str, Any]]) -> None:
-    if not isinstance(state, dict):
-        return
-    try:
-        torch.backends.cudnn.benchmark = bool(state.get("cudnn_benchmark", False))
-    except Exception:
-        pass
-
-
 def _formal_first_batch_loss(trainer: Any, prm: Dict[str, Any]) -> Optional[float]:
     try:
         trainer.model.train_setup(prm)
@@ -3264,16 +3113,12 @@ def _formal_eval_with_nn_dataset(
 
     started_at = time.time()
     data_roll_patch = None
-    loader_patch = None
-    cuda_backend_state = None
     try:
         unique_code = (
             f"# reward formal eval nonce pid={os.getpid()} ns={time.time_ns()} "
             f"freeze={int(bool(freeze_backbones))}\n{code}"
         )
         data_roll_patch = _patch_nn_dataset_dataroll_for_reward()
-        loader_patch = _patch_nn_dataset_loader_utils_for_reward()
-        cuda_backend_state = _configure_formal_eval_cuda_backend(str(cfg.device))
         formal_trace_context["reward_dataroll_warmup_batches"] = _safe_int_env(
             "NNGPT_REWARD_FORMAL_WARMUP_BATCHES",
             8,
@@ -3281,21 +3126,6 @@ def _formal_eval_with_nn_dataset(
         formal_trace_context["reward_dataroll_min_measured_batches"] = _safe_int_env(
             "NNGPT_REWARD_FORMAL_MIN_MEASURED_BATCHES",
             8,
-        )
-        formal_trace_context["reward_loader_pin_memory"] = bool(torch.cuda.is_available()) and _safe_bool_env(
-            "NNGPT_RL_FORMAL_PIN_MEMORY",
-            True,
-        )
-        formal_trace_context["reward_loader_persistent_workers"] = _safe_bool_env(
-            "NNGPT_RL_FORMAL_PERSISTENT_WORKERS",
-            True,
-        )
-        formal_trace_context["reward_loader_prefetch_factor"] = _optional_positive_int_env(
-            "NNGPT_RL_FORMAL_PREFETCH_FACTOR"
-        )
-        formal_trace_context["reward_cuda_cudnn_benchmark"] = _safe_bool_env(
-            "NNGPT_RL_FORMAL_CUDNN_BENCHMARK",
-            True,
         )
         with tempfile.TemporaryDirectory(prefix="nngpt_reward_formal_") as temp_stats_dir:
             _model_name, test_acc, _accuracy_to_time, _code_score = nn_api.check_nn(
@@ -3415,8 +3245,6 @@ def _formal_eval_with_nn_dataset(
             timed_out=type(exc).__name__ == "LearnTimeException",
         )
     finally:
-        _restore_formal_eval_cuda_backend(cuda_backend_state)
-        _restore_nn_dataset_loader_utils_patch(loader_patch)
         _restore_nn_dataset_dataroll_patch(data_roll_patch)
         _clear_reward_cuda_state()
 

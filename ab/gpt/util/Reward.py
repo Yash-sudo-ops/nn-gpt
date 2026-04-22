@@ -2914,14 +2914,47 @@ def _load_formal_training_history(
 
     if summary_path is not None:
         try:
-            if not summary_path.exists():
-                raise FileNotFoundError(summary_path)
-            if min_summary_mtime is not None and summary_path.stat().st_mtime < float(min_summary_mtime):
-                raise FileNotFoundError(f"stale summary: {summary_path}")
-            summary_payload = json.loads(summary_path.read_text())
-            epoch_details = summary_payload.get("epoch_details") or []
+            resolved_summary_path = Path(summary_path).expanduser()
+            if not resolved_summary_path.is_absolute():
+                resolved_summary_path = resolved_summary_path.resolve()
+            if not resolved_summary_path.exists():
+                raise FileNotFoundError(resolved_summary_path)
+            if (
+                min_summary_mtime is not None
+                and resolved_summary_path.stat().st_mtime < float(min_summary_mtime)
+            ):
+                raise FileNotFoundError(f"stale summary: {resolved_summary_path}")
+            summary_payload = json.loads(resolved_summary_path.read_text())
+
+            epoch_details = summary_payload.get("epoch_details") or summary_payload.get("epoch_history") or []
             for item in epoch_details:
                 _append_formal_epoch_row(epoch_rows, item, len(epoch_rows) + 1)
+            if not epoch_rows:
+                learning_curves = summary_payload.get("learning_curves") or {}
+                curve_epochs = learning_curves.get("epochs") or []
+                train_loss_curve = learning_curves.get("train_loss") or []
+                test_loss_curve = learning_curves.get("test_loss") or []
+                train_acc_curve = learning_curves.get("train_accuracy") or []
+                test_acc_curve = learning_curves.get("test_accuracy") or []
+                curve_len = max(
+                    len(curve_epochs),
+                    len(train_loss_curve),
+                    len(test_loss_curve),
+                    len(train_acc_curve),
+                    len(test_acc_curve),
+                )
+                for index in range(curve_len):
+                    _append_formal_epoch_row(
+                        epoch_rows,
+                        {
+                            "epoch": curve_epochs[index] if index < len(curve_epochs) else index + 1,
+                            "train_loss": train_loss_curve[index] if index < len(train_loss_curve) else None,
+                            "test_loss": test_loss_curve[index] if index < len(test_loss_curve) else None,
+                            "train_accuracy": train_acc_curve[index] if index < len(train_acc_curve) else None,
+                            "test_accuracy": test_acc_curve[index] if index < len(test_acc_curve) else None,
+                        },
+                        index + 1,
+                    )
             if epoch_rows:
                 return _formal_history_from_epoch_rows(epoch_rows)
         except Exception:
@@ -3128,6 +3161,7 @@ def _formal_eval_with_nn_dataset(
             8,
         )
         with tempfile.TemporaryDirectory(prefix="nngpt_reward_formal_") as temp_stats_dir:
+            summary_path = (Path.cwd() / "out" / "training_summary.json").resolve()
             _model_name, test_acc, _accuracy_to_time, _code_score = nn_api.check_nn(
                 unique_code,
                 str(getattr(cfg, "formal_task", "img-classification")),
@@ -3142,7 +3176,7 @@ def _formal_eval_with_nn_dataset(
             )
             formal_history = _load_formal_training_history(
                 Path(temp_stats_dir),
-                summary_path=Path("out") / "training_summary.json",
+                summary_path=summary_path,
                 min_summary_mtime=started_at - 1.0,
             )
         formal_duration_seconds = max(0.0, time.time() - started_at)

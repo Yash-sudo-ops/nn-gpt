@@ -660,7 +660,7 @@ def resolve_sft_num_epochs() -> int:
 
 
 def resolve_sft_save_steps() -> int:
-    return max(1, _env_int("NNGPT_SFT_SAVE_STEPS", 50))
+    return max(1, _env_int("NNGPT_SFT_SAVE_STEPS", 5))
 
 
 def resolve_sft_save_total_limit() -> int:

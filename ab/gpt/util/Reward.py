@@ -370,7 +370,34 @@ def get_reward_worker_plan() -> Dict[str, Any]:
             "is_train_gpu": bool(train_gpu is not None and int(train_gpu) == int(device_index)),
         }
 
-    def _expand_reward_gpu_assignments(per_gpu_worker_counts: list[int]) -> tuple[list[int], list[str]]:
+    def _ordered_reward_gpu_indices(
+        reward_gpu_indices: list[int],
+        gpu_memory_snapshots: list[Dict[str, Any]],
+    ) -> list[int]:
+        snapshot_by_index = {
+            int(snapshot.get("device_index")): snapshot
+            for snapshot in gpu_memory_snapshots
+            if snapshot.get("device_index") is not None
+        }
+
+        def _sort_key(device_index: int) -> tuple[float, float, int, int]:
+            snapshot = snapshot_by_index.get(int(device_index), {})
+            free_gib = snapshot.get("free_gib")
+            used_gib = snapshot.get("used_gib")
+            is_train = int(device_index) == int(train_gpu) if train_gpu is not None else False
+            return (
+                1 if is_train else 0,
+                -float(free_gib) if free_gib is not None else float("inf"),
+                float(used_gib) if used_gib is not None else float("inf"),
+                int(device_index),
+            )
+
+        return sorted((int(device_index) for device_index in reward_gpu_indices), key=_sort_key)
+
+    def _expand_reward_gpu_assignments(
+        per_gpu_worker_counts: list[int],
+        gpu_priority_indices: Optional[list[int]] = None,
+    ) -> tuple[list[int], list[str]]:
         reward_gpu_indices: list[int] = []
         reward_gpu_tokens: list[str] = []
         active_device_indices = [
@@ -378,7 +405,20 @@ def get_reward_worker_plan() -> Dict[str, Any]:
             for device_index, worker_count in enumerate(per_gpu_worker_counts)
             if int(worker_count) > 0
         ]
-        if train_gpu is not None:
+        if gpu_priority_indices:
+            prioritized_device_indices = [
+                int(device_index)
+                for device_index in gpu_priority_indices
+                if 0 <= int(device_index) < len(per_gpu_worker_counts)
+                and int(per_gpu_worker_counts[int(device_index)]) > 0
+            ]
+            remaining_device_indices = [
+                device_index
+                for device_index in active_device_indices
+                if device_index not in set(prioritized_device_indices)
+            ]
+            active_device_indices = prioritized_device_indices + remaining_device_indices
+        elif train_gpu is not None:
             train_device_index = int(train_gpu)
             active_device_indices = [
                 device_index
@@ -438,12 +478,16 @@ def get_reward_worker_plan() -> Dict[str, Any]:
         mode: str,
         per_gpu_worker_counts: list[int],
         dynamic_scaling: bool,
+        gpu_priority_indices: Optional[list[int]] = None,
         gpu_memory_snapshots: Optional[list[Dict[str, Any]]] = None,
         worker_budget_gib: Optional[float] = None,
         reserved_headroom_gib: Optional[float] = None,
         reason: str = "",
     ) -> Dict[str, Any]:
-        reward_gpu_indices, reward_gpu_tokens = _expand_reward_gpu_assignments(per_gpu_worker_counts)
+        reward_gpu_indices, reward_gpu_tokens = _expand_reward_gpu_assignments(
+            per_gpu_worker_counts,
+            gpu_priority_indices=gpu_priority_indices,
+        )
         if not reward_gpu_indices:
             return _cpu_reward_worker_plan(
                 mode=f"{mode}_cpu_fallback",
@@ -507,10 +551,8 @@ def get_reward_worker_plan() -> Dict[str, Any]:
         if free_gib is None:
             return max(0, min(1, max_workers_per_gpu))
         available_gib = max(0.0, float(free_gib) - float(reserved_headroom_gib))
-        worker_budget_gib = max(0.5, float(worker_budget_gib))
+        worker_budget_gib = max(1.0, float(worker_budget_gib))
         worker_count = int(available_gib // worker_budget_gib)
-        if worker_count <= 0 and float(free_gib) >= float(reserved_headroom_gib) + (worker_budget_gib * 0.75):
-            worker_count = 1
         if worker_count > 0:
             worker_count = max(worker_count, int(min_workers_per_gpu))
         return max(0, min(int(max_workers_per_gpu), int(worker_count)))
@@ -548,6 +590,7 @@ def get_reward_worker_plan() -> Dict[str, Any]:
                 reason="configured_reward_gpu_unavailable",
                 gpu_memory_snapshots=gpu_memory_snapshots,
             )
+        gpu_priority_indices = _ordered_reward_gpu_indices(reward_gpu_indices, gpu_memory_snapshots)
         per_gpu_worker_counts = [0] * visible_gpu_count
         for reward_gpu_index in reward_gpu_indices:
             per_gpu_worker_counts[int(reward_gpu_index)] = workers_per_gpu
@@ -560,6 +603,7 @@ def get_reward_worker_plan() -> Dict[str, Any]:
             mode=mode,
             per_gpu_worker_counts=per_gpu_worker_counts,
             dynamic_scaling=False,
+            gpu_priority_indices=gpu_priority_indices,
             gpu_memory_snapshots=gpu_memory_snapshots,
             reason="fixed_workers_override",
         )
@@ -577,6 +621,7 @@ def get_reward_worker_plan() -> Dict[str, Any]:
                 reason="configured_reward_gpu_unavailable",
                 gpu_memory_snapshots=gpu_memory_snapshots,
             )
+        gpu_priority_indices = _ordered_reward_gpu_indices(reward_gpu_indices, gpu_memory_snapshots)
         per_gpu_worker_counts = [0] * visible_gpu_count
         for reward_gpu_index in reward_gpu_indices:
             per_gpu_worker_counts[int(reward_gpu_index)] = 1
@@ -589,24 +634,17 @@ def get_reward_worker_plan() -> Dict[str, Any]:
             mode=mode,
             per_gpu_worker_counts=per_gpu_worker_counts,
             dynamic_scaling=False,
+            gpu_priority_indices=gpu_priority_indices,
             gpu_memory_snapshots=gpu_memory_snapshots,
             reason="dynamic_scaling_disabled",
         )
 
-    reserved_headroom_default = 6.0 if runtime["distributed"] else 4.0
-    worker_budget_default = 18.0 if runtime["distributed"] else 8.0
+    reserved_headroom_default = 0.0
+    worker_budget_default = 15.0
     reserved_headroom_gib = max(0.0, _safe_float_env("NNGPT_REWARD_RESERVED_HEADROOM_GIB", reserved_headroom_default))
     worker_budget_gib = max(1.0, _safe_float_env("NNGPT_REWARD_WORKER_BUDGET_GIB", worker_budget_default))
     default_min_workers = 1 if visible_gpu_count == 1 and not runtime["distributed"] else 0
     min_workers_per_gpu = max(0, _safe_int_env("NNGPT_REWARD_MIN_WORKERS_PER_GPU", default_min_workers))
-    max_workers_per_gpu = max(
-        min_workers_per_gpu,
-        _safe_int_env("NNGPT_REWARD_MAX_WORKERS_PER_GPU", 1),
-    )
-    if distributed_single_process_per_gpu:
-        max_workers_per_gpu = 1
-        min_workers_per_gpu = min(min_workers_per_gpu, max_workers_per_gpu)
-
     reward_gpu_indices = list(configured_reward_gpu_indices)
     gpu_memory_snapshots = [
         _cuda_device_memory_snapshot_gib(index)
@@ -620,6 +658,17 @@ def get_reward_worker_plan() -> Dict[str, Any]:
             worker_budget_gib=worker_budget_gib,
             reserved_headroom_gib=reserved_headroom_gib,
         )
+    gpu_priority_indices = _ordered_reward_gpu_indices(reward_gpu_indices, gpu_memory_snapshots)
+    max_workers_per_gpu = max(
+        min_workers_per_gpu,
+        _safe_int_env(
+            "NNGPT_REWARD_MAX_WORKERS_PER_GPU",
+            1024,
+        ),
+    )
+    if distributed_single_process_per_gpu:
+        max_workers_per_gpu = 1
+        min_workers_per_gpu = min(min_workers_per_gpu, max_workers_per_gpu)
     per_gpu_worker_counts = [0] * visible_gpu_count
     local_worker_counts = [
         _dynamic_reward_workers_for_gpu(
@@ -651,6 +700,7 @@ def get_reward_worker_plan() -> Dict[str, Any]:
         mode=mode,
         per_gpu_worker_counts=per_gpu_worker_counts,
         dynamic_scaling=True,
+        gpu_priority_indices=gpu_priority_indices,
         gpu_memory_snapshots=gpu_memory_snapshots,
         worker_budget_gib=worker_budget_gib,
         reserved_headroom_gib=reserved_headroom_gib,

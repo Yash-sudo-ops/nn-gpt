@@ -28,7 +28,7 @@ WORK_DIR="${WORK_BASE}/nn-gpt"
 SLURM_DIR="${RUN_ROOT}/slurm"
 SOURCE_DIR="${REPO_ROOT}"
 NN_DATASET_ROOT="${NNGPT_NN_DATASET_ROOT:-/home/s471802/nn-dataset}"
-INSTALLED_AB_NN_DIR=""
+FALLBACK_AB_NN_DIR="${NN_DATASET_ROOT}/ab/nn"
 
 mkdir -p "${SLURM_DIR}" "${RUN_ROOT}/out"
 source /home/s471802/.venv/bin/activate
@@ -45,23 +45,11 @@ if [ -z "${MASTER_PORT:-}" ]; then
 fi
 export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
 
-if [ ! -d "${NN_DATASET_ROOT}/ab/nn" ]; then
-  echo "nn-dataset source not found: ${NN_DATASET_ROOT}/ab/nn" >&2
+if [ ! -d "${FALLBACK_AB_NN_DIR}" ]; then
+  echo "nn-dataset source not found: ${FALLBACK_AB_NN_DIR}" >&2
   exit 1
 fi
-
-INSTALLED_AB_NN_DIR="$(
-  python3 - <<'PY'
-from pathlib import Path
-import ab.nn.util
-print(Path(ab.nn.util.__file__).resolve().parent.parent)
-PY
-)"
-if [ ! -d "${INSTALLED_AB_NN_DIR}" ]; then
-  echo "Installed ab.nn package not found: ${INSTALLED_AB_NN_DIR}" >&2
-  exit 1
-fi
-export NNGPT_INSTALLED_AB_NN_DIR="${INSTALLED_AB_NN_DIR}"
+export NNGPT_FALLBACK_AB_NN_DIR="${FALLBACK_AB_NN_DIR}"
 
 rm -rf "${WORK_DIR}"
 mkdir -p "${WORK_BASE}"
@@ -84,20 +72,20 @@ import os
 from pkgutil import extend_path
 
 __path__ = extend_path(__path__, __name__)
-_installed_dir = os.environ.get("NNGPT_INSTALLED_AB_NN_DIR")
-if _installed_dir and os.path.isdir(_installed_dir) and _installed_dir not in __path__:
-    __path__.append(_installed_dir)
+_fallback_dir = os.environ.get("NNGPT_FALLBACK_AB_NN_DIR")
+if _fallback_dir and os.path.isdir(_fallback_dir) and _fallback_dir not in __path__:
+    __path__.append(_fallback_dir)
 PY
 cat > "${WORK_DIR}/ab/nn/nn/__init__.py" <<'PY'
 import os
 from pkgutil import extend_path
 
 __path__ = extend_path(__path__, __name__)
-_installed_dir = os.environ.get("NNGPT_INSTALLED_AB_NN_DIR")
-if _installed_dir:
-    _installed_nn_dir = os.path.join(_installed_dir, "nn")
-    if os.path.isdir(_installed_nn_dir) and _installed_nn_dir not in __path__:
-        __path__.append(_installed_nn_dir)
+_fallback_dir = os.environ.get("NNGPT_FALLBACK_AB_NN_DIR")
+if _fallback_dir:
+    _fallback_nn_dir = os.path.join(_fallback_dir, "nn")
+    if os.path.isdir(_fallback_nn_dir) and _fallback_nn_dir not in __path__:
+        __path__.append(_fallback_nn_dir)
 PY
 cp "${NN_DATASET_ROOT}/ab/nn/api.py" "${WORK_DIR}/ab/nn/api.py"
 for subdir in util loader metric transform; do
@@ -186,7 +174,7 @@ echo "Resume source: ${resume_source}"
 echo "Master addr: ${MASTER_ADDR}"
 echo "Master port: ${MASTER_PORT}"
 echo "nn-dataset root: ${NN_DATASET_ROOT}"
-echo "nn-dataset installed package: ${INSTALLED_AB_NN_DIR}"
+echo "nn-dataset fallback package: ${FALLBACK_AB_NN_DIR}"
 
 cd "${WORK_DIR}"
 NN_DATASET_IMPORT_PATH="$(

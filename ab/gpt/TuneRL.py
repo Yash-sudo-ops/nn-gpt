@@ -108,10 +108,16 @@ graph_archive_counts = Counter()
 family_archive_counts = Counter()
 family_hash_archive_counts = Counter()
 descriptor_archive_counts = Counter()
+backbone_signature_archive_counts = Counter()
+cnn_signature_archive_counts = Counter()
+backbone_cnn_pair_archive_counts = Counter()
 family_metric_best: Dict[str, float] = {}
 motif_name_counts = Counter()
 saved_graph_counts = Counter()
 saved_family_hash_counts = Counter()
+saved_backbone_signature_counts = Counter()
+saved_cnn_signature_counts = Counter()
+saved_backbone_cnn_pair_counts = Counter()
 goal_graph_archive_counts: Dict[str, Counter] = {}
 goal_family_hash_archive_counts: Dict[str, Counter] = {}
 saved_goal_family_hash_counts: Dict[str, Counter] = {}
@@ -119,6 +125,11 @@ train_graph_hashes: Set[str] = set()
 train_family_hashes: Set[str] = set()
 train_descriptor_keys: Set[str] = set()
 train_reference_stats: Dict[str, int] = {}
+current_group_reward_target_sum_by_backbone: Dict[str, float] = {}
+current_group_reward_target_count_by_backbone = Counter()
+prev_closed_group_mean_reward_target_by_backbone: Dict[str, float] = {}
+best_closed_group_mean_reward_target_by_backbone: Dict[str, float] = {}
+saved_best_reward_target_by_backbone_cnn: Dict[str, float] = {}
 
 
 def _iter_gradient_checkpoint_roots(model: Any):
@@ -202,6 +213,8 @@ BEST_GROUP_REFRESH_DELTA = 0.0015
 GOAL_REFRESH_DELTA = 0.0015
 NON_IMPROVING_REWARD_CAP = 0.04
 FORMAL_REWARD_TRANSFORM = "norm_128_flip"
+BACKBONE_BASELINE_MIN_ARCHIVE_SAMPLES = 3
+SAVE_DUPLICATE_BACKBONE_CNN_DELTA = 0.002
 BATCH_ELITE_SOFT_BONUSES = (0.10, 0.07, 0.05, 0.03, 0.02)
 BATCH_ELITE_IMPROVING_BONUSES = (0.18, 0.13, 0.09, 0.06, 0.04)
 STRUCTURE_MACRO_BONUS = 0.04
@@ -312,10 +325,24 @@ STAGE23_DOMINANT_DESCRIPTOR_SOFT_SHARE = 0.45
 STAGE23_DOMINANT_DESCRIPTOR_STRONG_SHARE = 0.60
 STAGE23_DOMINANT_DESCRIPTOR_REPEAT_PENALTY = -0.12
 STAGE23_DOMINANT_DESCRIPTOR_REPEAT_STRONG_PENALTY = -0.20
+STAGE23_CNN_BATCH_UNIQUE_BONUS = 0.07
+STAGE23_CNN_ARCHIVE_NOVEL_BONUS = 0.05
+STAGE23_CNN_BATCH_REPEAT_STEP_PENALTY = -0.08
+STAGE23_CNN_BATCH_REPEAT_MAX_PENALTY = -0.30
+STAGE23_CNN_ARCHIVE_REPEAT_STEP_PENALTY = -0.03
+STAGE23_CNN_ARCHIVE_REPEAT_MAX_PENALTY = -0.18
+STAGE23_NON_DOMINANT_CNN_BONUS = 0.08
+STAGE23_DOMINANT_CNN_SOFT_SHARE = 0.45
+STAGE23_DOMINANT_CNN_STRONG_SHARE = 0.65
+STAGE23_DOMINANT_CNN_REPEAT_PENALTY = -0.16
+STAGE23_DOMINANT_CNN_REPEAT_STRONG_PENALTY = -0.24
 STAGE23_STRUCTURE_ARCHIVE_RARITY_CAP = 0.03
 STAGE2_DENSE_SCALE = 0.75
 STAGE2_PREV_GROUP_SCALE = 0.70
 STAGE2_BEST_GROUP_SCALE = 0.70
+STAGE2_GLOBAL_BASELINE_BLEND = 0.35
+STAGE2_BACKBONE_PREV_GROUP_SCALE = 0.95
+STAGE2_BACKBONE_BEST_GROUP_SCALE = 0.95
 STAGE2_GOAL_BEST_SCALE = 0.70
 STAGE2_GOAL_MATCH_SCALE = 0.85
 STAGE2_STRUCTURE_SCALE = 1.40
@@ -327,6 +354,9 @@ STAGE2_DESCRIPTOR_NON_IMPROVING_CAP = 0.03
 STAGE3_DENSE_SCALE = 1.20
 STAGE3_PREV_GROUP_SCALE = 1.10
 STAGE3_BEST_GROUP_SCALE = 1.10
+STAGE3_GLOBAL_BASELINE_BLEND = 0.45
+STAGE3_BACKBONE_PREV_GROUP_SCALE = 1.20
+STAGE3_BACKBONE_BEST_GROUP_SCALE = 1.15
 STAGE3_GOAL_BEST_SCALE = 1.00
 STAGE3_GOAL_MATCH_SCALE = 1.00
 STAGE3_STRUCTURE_SCALE = 0.85
@@ -360,6 +390,12 @@ dominant_family_hash: Optional[str] = None
 dominant_family_share: float = 0.0
 dominant_descriptor_key: Optional[str] = None
 dominant_descriptor_share: float = 0.0
+dominant_backbone_signature: Optional[str] = None
+dominant_backbone_share: float = 0.0
+dominant_cnn_signature: Optional[str] = None
+dominant_cnn_share: float = 0.0
+dominant_backbone_cnn_pair: Optional[str] = None
+dominant_backbone_cnn_share: float = 0.0
 prev_group_feedback: List["GroupFeedbackSummary"] = []
 best_group_feedback: List["GroupFeedbackSummary"] = []
 current_group_top_feedback: List["GroupFeedbackSummary"] = []
@@ -423,6 +459,9 @@ class GroupFeedbackSummary:
     family_hash: str
     signature: str
     reward_group_id: int
+    backbone_signature: str = ""
+    cnn_signature: str = ""
+    cnn_expr_short: str = ""
 
 
 def _counter_payload(counter: Counter) -> Dict[str, int]:
@@ -465,6 +504,70 @@ def _current_generation_total() -> int:
     return len(generation_history)
 
 
+def _normalize_backbone_signature_names(backbone_model_names: Optional[List[str]]) -> List[str]:
+    normalized = [
+        str(name).strip()
+        for name in list(backbone_model_names or [])
+        if str(name).strip()
+    ]
+    normalized.sort()
+    return normalized
+
+
+def build_backbone_signature(backbone_model_names: Optional[List[str]]) -> str:
+    normalized = _normalize_backbone_signature_names(backbone_model_names)
+    return " + ".join(normalized) if normalized else "unknown_backbone_pair"
+
+
+def _backbone_cnn_pair_key(backbone_signature: str, cnn_signature: str) -> str:
+    return f"{str(backbone_signature or 'unknown_backbone_pair')}::{str(cnn_signature or 'incomplete_cnn')}"
+
+
+def _result_backbone_signature(res: Dict[str, Any]) -> str:
+    signature = str(res.get("backbone_signature") or "").strip()
+    if signature:
+        return signature
+    return build_backbone_signature(res.get("backbone_model_names"))
+
+
+def _result_cnn_signature(res: Dict[str, Any], graph_info) -> str:
+    signature = str(res.get("cnn_signature") or "").strip()
+    if signature:
+        return signature
+    if graph_info is not None:
+        signature = str(getattr(graph_info, "cnn_signature", "") or "").strip()
+        if signature:
+            return signature
+    return "incomplete_cnn"
+
+
+def _float_dict_payload(mapping: Dict[str, float]) -> Dict[str, float]:
+    return {
+        str(key): float(value)
+        for key, value in mapping.items()
+    }
+
+
+def _restore_float_dict(target: Dict[str, float], payload: Optional[Dict[str, float]]) -> None:
+    target.clear()
+    target.update(
+        {
+            str(key): float(value)
+            for key, value in (payload or {}).items()
+        }
+    )
+
+
+def _dominant_counter_entry(counter_payload: Optional[Dict[str, int]]) -> Tuple[Optional[str], float]:
+    if not counter_payload:
+        return None, 0.0
+    total = sum(int(value) for value in counter_payload.values())
+    if total <= 0:
+        return None, 0.0
+    key, count = max(counter_payload.items(), key=lambda item: int(item[1]))
+    return str(key), float(count) / float(total)
+
+
 def capture_reward_runtime_state() -> Dict[str, Any]:
     return {
         "B_index": B_index,
@@ -495,10 +598,19 @@ def capture_reward_runtime_state() -> Dict[str, Any]:
         "dominant_family_share": dominant_family_share,
         "dominant_descriptor_key": dominant_descriptor_key,
         "dominant_descriptor_share": dominant_descriptor_share,
+        "dominant_backbone_signature": dominant_backbone_signature,
+        "dominant_backbone_share": dominant_backbone_share,
+        "dominant_cnn_signature": dominant_cnn_signature,
+        "dominant_cnn_share": dominant_cnn_share,
+        "dominant_backbone_cnn_pair": dominant_backbone_cnn_pair,
+        "dominant_backbone_cnn_share": dominant_backbone_cnn_share,
         "graph_archive_counts": _counter_payload(graph_archive_counts),
         "family_archive_counts": _counter_payload(family_archive_counts),
         "family_hash_archive_counts": _counter_payload(family_hash_archive_counts),
         "descriptor_archive_counts": _counter_payload(descriptor_archive_counts),
+        "backbone_signature_archive_counts": _counter_payload(backbone_signature_archive_counts),
+        "cnn_signature_archive_counts": _counter_payload(cnn_signature_archive_counts),
+        "backbone_cnn_pair_archive_counts": _counter_payload(backbone_cnn_pair_archive_counts),
         "family_metric_best": {
             str(key): float(value)
             for key, value in family_metric_best.items()
@@ -506,9 +618,17 @@ def capture_reward_runtime_state() -> Dict[str, Any]:
         "motif_name_counts": _counter_payload(motif_name_counts),
         "saved_graph_counts": _counter_payload(saved_graph_counts),
         "saved_family_hash_counts": _counter_payload(saved_family_hash_counts),
+        "saved_backbone_signature_counts": _counter_payload(saved_backbone_signature_counts),
+        "saved_cnn_signature_counts": _counter_payload(saved_cnn_signature_counts),
+        "saved_backbone_cnn_pair_counts": _counter_payload(saved_backbone_cnn_pair_counts),
         "goal_graph_archive_counts": _nested_counter_payload(goal_graph_archive_counts),
         "goal_family_hash_archive_counts": _nested_counter_payload(goal_family_hash_archive_counts),
         "saved_goal_family_hash_counts": _nested_counter_payload(saved_goal_family_hash_counts),
+        "current_group_reward_target_sum_by_backbone": _float_dict_payload(current_group_reward_target_sum_by_backbone),
+        "current_group_reward_target_count_by_backbone": _counter_payload(current_group_reward_target_count_by_backbone),
+        "prev_closed_group_mean_reward_target_by_backbone": _float_dict_payload(prev_closed_group_mean_reward_target_by_backbone),
+        "best_closed_group_mean_reward_target_by_backbone": _float_dict_payload(best_closed_group_mean_reward_target_by_backbone),
+        "saved_best_reward_target_by_backbone_cnn": _float_dict_payload(saved_best_reward_target_by_backbone_cnn),
         "prev_group_feedback": _feedback_summary_payload(prev_group_feedback),
         "best_group_feedback": _feedback_summary_payload(best_group_feedback),
         "current_group_top_feedback": _current_group_top_feedback_payload(),
@@ -568,6 +688,12 @@ def restore_reward_runtime_state(state: Optional[Dict[str, Any]]) -> None:
         "dominant_family_share": 0.0,
         "dominant_descriptor_key": None,
         "dominant_descriptor_share": 0.0,
+        "dominant_backbone_signature": None,
+        "dominant_backbone_share": 0.0,
+        "dominant_cnn_signature": None,
+        "dominant_cnn_share": 0.0,
+        "dominant_backbone_cnn_pair": None,
+        "dominant_backbone_cnn_share": 0.0,
         "current_stage_name": STAGE1_STRUCTURE_EXPLORE,
         "recovery_active": False,
         "recovery_start_generation_total": 0,
@@ -580,6 +706,9 @@ def restore_reward_runtime_state(state: Optional[Dict[str, Any]]) -> None:
     _restore_counter(family_archive_counts, state.get("family_archive_counts"))
     _restore_counter(family_hash_archive_counts, state.get("family_hash_archive_counts"))
     _restore_counter(descriptor_archive_counts, state.get("descriptor_archive_counts"))
+    _restore_counter(backbone_signature_archive_counts, state.get("backbone_signature_archive_counts"))
+    _restore_counter(cnn_signature_archive_counts, state.get("cnn_signature_archive_counts"))
+    _restore_counter(backbone_cnn_pair_archive_counts, state.get("backbone_cnn_pair_archive_counts"))
     family_metric_best.clear()
     family_metric_best.update(
         {
@@ -590,9 +719,17 @@ def restore_reward_runtime_state(state: Optional[Dict[str, Any]]) -> None:
     _restore_counter(motif_name_counts, state.get("motif_name_counts"))
     _restore_counter(saved_graph_counts, state.get("saved_graph_counts"))
     _restore_counter(saved_family_hash_counts, state.get("saved_family_hash_counts"))
+    _restore_counter(saved_backbone_signature_counts, state.get("saved_backbone_signature_counts"))
+    _restore_counter(saved_cnn_signature_counts, state.get("saved_cnn_signature_counts"))
+    _restore_counter(saved_backbone_cnn_pair_counts, state.get("saved_backbone_cnn_pair_counts"))
     _restore_nested_counters(goal_graph_archive_counts, state.get("goal_graph_archive_counts"))
     _restore_nested_counters(goal_family_hash_archive_counts, state.get("goal_family_hash_archive_counts"))
     _restore_nested_counters(saved_goal_family_hash_counts, state.get("saved_goal_family_hash_counts"))
+    _restore_float_dict(current_group_reward_target_sum_by_backbone, state.get("current_group_reward_target_sum_by_backbone"))
+    _restore_counter(current_group_reward_target_count_by_backbone, state.get("current_group_reward_target_count_by_backbone"))
+    _restore_float_dict(prev_closed_group_mean_reward_target_by_backbone, state.get("prev_closed_group_mean_reward_target_by_backbone"))
+    _restore_float_dict(best_closed_group_mean_reward_target_by_backbone, state.get("best_closed_group_mean_reward_target_by_backbone"))
+    _restore_float_dict(saved_best_reward_target_by_backbone_cnn, state.get("saved_best_reward_target_by_backbone_cnn"))
 
     best_reward_target_by_goal.clear()
     best_reward_target_by_goal.update(
@@ -1176,6 +1313,9 @@ def _build_group_feedback_summary(
     unfrozen_train_acc = _optional_float(res.get("unfrozen_train_acc"))
     unfrozen_test_acc = _optional_float(res.get("unfrozen_test_acc"))
     backbone_names = list(res.get("backbone_model_names") or [])
+    backbone_signature = str(res.get("backbone_signature") or build_backbone_signature(backbone_names))
+    cnn_signature = str(res.get("cnn_signature") or getattr(graph_info, "cnn_signature", "") or "")
+    cnn_expr_short = _truncate_text(str(res.get("cnn_expr") or getattr(graph_info, "cnn_expr", "") or ""), 96)
     open_discovery = dict(res.get("open_discovery") or {})
     stats_short = _feedback_stats_short(open_discovery)
     summary = (
@@ -1184,6 +1324,8 @@ def _build_group_feedback_summary(
         f"frozen_train={frozen_train_acc:.4f}; "
         f"frozen_test={frozen_test_acc:.4f}; "
         f"backbones=[{', '.join(backbone_names)}]; "
+        f"backbone_bucket={backbone_signature}; "
+        f"cnn={cnn_expr_short or cnn_signature or 'n/a'}; "
         f"graph={graph_expr_short}; "
         f"stats={stats_short}"
     )
@@ -1203,6 +1345,9 @@ def _build_group_feedback_summary(
         family_hash=str(getattr(graph_info, "family_hash", "") or res.get("family_hash") or ""),
         signature=str(res.get("signature") or ""),
         reward_group_id=reward_group_id,
+        backbone_signature=backbone_signature,
+        cnn_signature=cnn_signature,
+        cnn_expr_short=cnn_expr_short,
     )
 
 
@@ -1245,6 +1390,12 @@ def get_prompt_feedback_state() -> Dict[str, Any]:
         "best_closed_group_id": best_closed_group_id,
         "dominant_family_hash": dominant_family_hash,
         "dominant_family_share": dominant_family_share,
+        "dominant_backbone_signature": dominant_backbone_signature,
+        "dominant_backbone_share": dominant_backbone_share,
+        "dominant_cnn_signature": dominant_cnn_signature,
+        "dominant_cnn_share": dominant_cnn_share,
+        "dominant_backbone_cnn_pair": dominant_backbone_cnn_pair,
+        "dominant_backbone_cnn_share": dominant_backbone_cnn_share,
         "prev_group_feedback": _feedback_summary_payload(prev_group_feedback),
         "best_group_feedback": _feedback_summary_payload(best_group_feedback),
         "training_context": training_context,
@@ -1283,6 +1434,12 @@ def render_prompt_feedback_text(*, feedback_char_budget: int = 1200) -> str:
             "- Current Dominant Family To Avoid When Not Improving: "
             f"{state['dominant_family_hash'] or 'n/a'} "
             f"(share={float(state['dominant_family_share'] or 0.0):.2%})"
+        ),
+        (
+            "- Rule: same backbone pair is acceptable; compare new models mainly against that pair's own recent baseline"
+        ),
+        (
+            "- Rule: within the same backbone pair, change stem/project/fuse CNN layout, not just widths, ordering, or formatting"
         ),
     ]
     if current_stage_name != STAGE1_STRUCTURE_EXPLORE:
@@ -1383,6 +1540,12 @@ def reset_reward_runtime_state() -> None:
     global dominant_family_share
     global dominant_descriptor_key
     global dominant_descriptor_share
+    global dominant_backbone_signature
+    global dominant_backbone_share
+    global dominant_cnn_signature
+    global dominant_cnn_share
+    global dominant_backbone_cnn_pair
+    global dominant_backbone_cnn_share
     global current_stage_name
     global recovery_active
     global recovery_start_generation_total
@@ -1392,13 +1555,24 @@ def reset_reward_runtime_state() -> None:
     family_archive_counts.clear()
     family_hash_archive_counts.clear()
     descriptor_archive_counts.clear()
+    backbone_signature_archive_counts.clear()
+    cnn_signature_archive_counts.clear()
+    backbone_cnn_pair_archive_counts.clear()
     family_metric_best.clear()
     motif_name_counts.clear()
     saved_graph_counts.clear()
     saved_family_hash_counts.clear()
+    saved_backbone_signature_counts.clear()
+    saved_cnn_signature_counts.clear()
+    saved_backbone_cnn_pair_counts.clear()
     goal_graph_archive_counts.clear()
     goal_family_hash_archive_counts.clear()
     saved_goal_family_hash_counts.clear()
+    current_group_reward_target_sum_by_backbone.clear()
+    current_group_reward_target_count_by_backbone.clear()
+    prev_closed_group_mean_reward_target_by_backbone.clear()
+    best_closed_group_mean_reward_target_by_backbone.clear()
+    saved_best_reward_target_by_backbone_cnn.clear()
     stage_closed_group_counts.clear()
     stage_best_group_mean_reward_target.clear()
     stage_entry_generation_totals.clear()
@@ -1433,6 +1607,12 @@ def reset_reward_runtime_state() -> None:
     dominant_family_share = 0.0
     dominant_descriptor_key = None
     dominant_descriptor_share = 0.0
+    dominant_backbone_signature = None
+    dominant_backbone_share = 0.0
+    dominant_cnn_signature = None
+    dominant_cnn_share = 0.0
+    dominant_backbone_cnn_pair = None
+    dominant_backbone_cnn_share = 0.0
     current_stage_name = STAGE1_STRUCTURE_EXPLORE
     recovery_active = False
     recovery_start_generation_total = 0
@@ -1458,6 +1638,12 @@ def current_reward_group_context() -> Dict[str, Any]:
         "dominant_family_share": dominant_family_share,
         "dominant_descriptor_key": dominant_descriptor_key,
         "dominant_descriptor_share": dominant_descriptor_share,
+        "dominant_backbone_signature": dominant_backbone_signature,
+        "dominant_backbone_share": dominant_backbone_share,
+        "dominant_cnn_signature": dominant_cnn_signature,
+        "dominant_cnn_share": dominant_cnn_share,
+        "dominant_backbone_cnn_pair": dominant_backbone_cnn_pair,
+        "dominant_backbone_cnn_share": dominant_backbone_cnn_share,
         "current_stage_name": current_stage_name,
         "current_stage_index": RL_STAGE_TO_INDEX.get(current_stage_name, 0),
         "generation_total": _current_generation_total(),
@@ -1857,11 +2043,19 @@ def log_memory_snapshot(
         )
 def update_current_group_metrics(results: List[Dict[str, Any]]) -> None:
     for res in results:
+        reward_target_value = _result_reward_target_value(res)
         _increment_optional_metric(
             "current_group_reward_target_sum",
             "current_group_reward_target_count",
-            _result_reward_target_value(res),
+            reward_target_value,
         )
+        backbone_signature = _result_backbone_signature(res)
+        if reward_target_value is not None and backbone_signature:
+            current_group_reward_target_sum_by_backbone[backbone_signature] = (
+                float(current_group_reward_target_sum_by_backbone.get(backbone_signature, 0.0))
+                + float(reward_target_value)
+            )
+            current_group_reward_target_count_by_backbone[backbone_signature] += 1
         _increment_optional_metric(
             "current_group_frozen_train_acc_sum",
             "current_group_frozen_train_acc_count",
@@ -1900,6 +2094,8 @@ def _reset_stage_comparison_state() -> None:
     prev_closed_group_mean_test_acc = None
     best_closed_group_mean_test_acc = None
     best_closed_group_id = None
+    prev_closed_group_mean_reward_target_by_backbone.clear()
+    best_closed_group_mean_reward_target_by_backbone.clear()
     best_reward_target_by_goal.clear()
     prev_group_feedback.clear()
     best_group_feedback.clear()
@@ -2164,8 +2360,14 @@ def _stage_gate_snapshot() -> Dict[str, Any]:
         "recent_unique_formal_families": len(_family_hash_set(formal_rows, key="family_hash")),
         "recent_target_qualified_count": len(qualified_target_rows),
         "recent_unique_target_families": len(_family_hash_set(qualified_target_rows, key="family_hash")),
+        "recent_unique_backbone_signatures": len(_family_hash_set(recent_generations, key="backbone_signature")),
+        "recent_unique_cnn_signatures": len(_family_hash_set(recent_generations, key="cnn_signature")),
+        "recent_unique_backbone_cnn_pairs": len(_family_hash_set(recent_generations, key="backbone_cnn_pair_key")),
         "recent_mean_dominant_family_share": _mean_dominant_share(recent_groups),
         "recent_mean_dominant_descriptor_share": _mean_dominant_descriptor_share(recent_groups),
+        "recent_mean_dominant_backbone_share": _mean_dominant_backbone_share(recent_groups),
+        "recent_mean_dominant_cnn_share": _mean_dominant_cnn_share(recent_groups),
+        "recent_mean_dominant_backbone_cnn_share": _mean_dominant_backbone_cnn_share(recent_groups),
         "recent_improving_groups": _count_group_improvements(_recent_stage_group_window(stage_name, 4)),
         "recovery_active": bool(recovery_active),
     }
@@ -2310,6 +2512,12 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
     global dominant_family_share
     global dominant_descriptor_key
     global dominant_descriptor_share
+    global dominant_backbone_signature
+    global dominant_backbone_share
+    global dominant_cnn_signature
+    global dominant_cnn_share
+    global dominant_backbone_cnn_pair
+    global dominant_backbone_cnn_share
     global stage_closed_group_counts
 
     reward_batch_index += 1
@@ -2343,9 +2551,19 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
         current_group_unfrozen_test_acc_sum,
         current_group_unfrozen_test_acc_count,
     )
+    closed_mean_reward_target_by_backbone = {
+        str(backbone_signature): (
+            float(current_group_reward_target_sum_by_backbone.get(backbone_signature, 0.0))
+            / float(count)
+        )
+        for backbone_signature, count in current_group_reward_target_count_by_backbone.items()
+        if int(count) > 0
+    }
     prev_closed_group_mean_reward_target_acc = closed_mean_reward_target
     prev_closed_group_train_acc_mean = closed_mean_train
     prev_closed_group_mean_test_acc = closed_mean_test
+    prev_closed_group_mean_reward_target_by_backbone.clear()
+    prev_closed_group_mean_reward_target_by_backbone.update(closed_mean_reward_target_by_backbone)
     stage1_feedback_ready = bool(current_group_top_feedback) or stage_name != STAGE1_STRUCTURE_EXPLORE
 
     if best_closed_group_mean_reward_target_acc is None or (
@@ -2356,6 +2574,11 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
             best_closed_group_id = current_group_id
             if stage1_feedback_ready:
                 best_group_feedback[:] = list(current_group_top_feedback[:FEEDBACK_SUMMARY_LIMIT])
+    for backbone_signature, backbone_mean in closed_mean_reward_target_by_backbone.items():
+        best_closed_group_mean_reward_target_by_backbone[backbone_signature] = max(
+            float(backbone_mean),
+            float(best_closed_group_mean_reward_target_by_backbone.get(backbone_signature, float("-inf"))),
+        )
 
     for goal_key, candidate_best in current_group_goal_best_candidates.items():
         best_reward_target_by_goal[goal_key] = max(
@@ -2389,6 +2612,27 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
     else:
         dominant_descriptor_key = None
         dominant_descriptor_share = 0.0
+    backbone_total = sum(backbone_signature_archive_counts.values())
+    if backbone_total > 0:
+        dominant_backbone_signature, dominant_backbone_count = backbone_signature_archive_counts.most_common(1)[0]
+        dominant_backbone_share = dominant_backbone_count / backbone_total
+    else:
+        dominant_backbone_signature = None
+        dominant_backbone_share = 0.0
+    cnn_total = sum(cnn_signature_archive_counts.values())
+    if cnn_total > 0:
+        dominant_cnn_signature, dominant_cnn_count = cnn_signature_archive_counts.most_common(1)[0]
+        dominant_cnn_share = dominant_cnn_count / cnn_total
+    else:
+        dominant_cnn_signature = None
+        dominant_cnn_share = 0.0
+    backbone_cnn_total = sum(backbone_cnn_pair_archive_counts.values())
+    if backbone_cnn_total > 0:
+        dominant_backbone_cnn_pair, dominant_backbone_cnn_count = backbone_cnn_pair_archive_counts.most_common(1)[0]
+        dominant_backbone_cnn_share = dominant_backbone_cnn_count / backbone_cnn_total
+    else:
+        dominant_backbone_cnn_pair = None
+        dominant_backbone_cnn_share = 0.0
 
     if stage1_feedback_ready:
         prev_group_feedback[:] = list(current_group_top_feedback[:FEEDBACK_SUMMARY_LIMIT])
@@ -2423,6 +2667,15 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
         "dominant_family_share": dominant_family_share,
         "dominant_descriptor_key": dominant_descriptor_key,
         "dominant_descriptor_share": dominant_descriptor_share,
+        "dominant_backbone_signature": dominant_backbone_signature,
+        "dominant_backbone_share": dominant_backbone_share,
+        "dominant_cnn_signature": dominant_cnn_signature,
+        "dominant_cnn_share": dominant_cnn_share,
+        "dominant_backbone_cnn_pair": dominant_backbone_cnn_pair,
+        "dominant_backbone_cnn_share": dominant_backbone_cnn_share,
+        "closed_mean_reward_target_by_backbone": _float_dict_payload(closed_mean_reward_target_by_backbone),
+        "prev_closed_group_mean_reward_target_by_backbone": _float_dict_payload(prev_closed_group_mean_reward_target_by_backbone),
+        "best_closed_group_mean_reward_target_by_backbone": _float_dict_payload(best_closed_group_mean_reward_target_by_backbone),
         "unique_descriptor_count": len(descriptor_archive_counts),
         "trainable_samples": current_group_reward_target_count,
         "main_process_rss_gib": _read_process_rss_gib(),
@@ -2480,6 +2733,8 @@ def close_reward_group_if_needed() -> Optional[Dict[str, Any]]:
     current_group_unfrozen_train_acc_count = 0
     current_group_unfrozen_test_acc_sum = 0.0
     current_group_unfrozen_test_acc_count = 0
+    current_group_reward_target_sum_by_backbone.clear()
+    current_group_reward_target_count_by_backbone.clear()
     _reset_current_group_feedback_state()
     _save_stage_checkpoint(
         "group_closed",
@@ -2645,6 +2900,39 @@ def _mean_dominant_descriptor_share(items: List[Dict[str, Any]]) -> Optional[flo
         float(item.get("dominant_descriptor_share"))
         for item in items
         if item.get("dominant_descriptor_share") is not None
+    ]
+    if not shares:
+        return None
+    return float(sum(shares) / len(shares))
+
+
+def _mean_dominant_backbone_share(items: List[Dict[str, Any]]) -> Optional[float]:
+    shares = [
+        float(item.get("dominant_backbone_share"))
+        for item in items
+        if item.get("dominant_backbone_share") is not None
+    ]
+    if not shares:
+        return None
+    return float(sum(shares) / len(shares))
+
+
+def _mean_dominant_cnn_share(items: List[Dict[str, Any]]) -> Optional[float]:
+    shares = [
+        float(item.get("dominant_cnn_share"))
+        for item in items
+        if item.get("dominant_cnn_share") is not None
+    ]
+    if not shares:
+        return None
+    return float(sum(shares) / len(shares))
+
+
+def _mean_dominant_backbone_cnn_share(items: List[Dict[str, Any]]) -> Optional[float]:
+    shares = [
+        float(item.get("dominant_backbone_cnn_share"))
+        for item in items
+        if item.get("dominant_backbone_cnn_share") is not None
     ]
     if not shares:
         return None
@@ -3105,6 +3393,33 @@ def _extract_backbone_model_names(init_code: str) -> List[str]:
     return [matches[name] for name in ("backbone_a", "backbone_b") if name in matches]
 
 
+def _entry_backbone_model_names(entry: Dict[str, Any]) -> List[str]:
+    backbone_names = list(entry.get("backbone_model_names") or [])
+    if backbone_names:
+        return backbone_names
+    _, init_code, _ = extract_completion_blocks(str(entry.get("completion") or ""))
+    return _extract_backbone_model_names(init_code)
+
+
+def _entry_backbone_signature(entry: Dict[str, Any]) -> str:
+    signature = str(entry.get("backbone_signature") or "").strip()
+    if signature:
+        return signature
+    return build_backbone_signature(_entry_backbone_model_names(entry))
+
+
+def _entry_cnn_signature(entry: Dict[str, Any]) -> str:
+    signature = str(entry.get("cnn_signature") or "").strip()
+    if signature:
+        return signature
+    graph_info = entry.get("graph_info")
+    if graph_info is not None:
+        signature = str(getattr(graph_info, "cnn_signature", "") or "").strip()
+        if signature:
+            return signature
+    return "incomplete_cnn"
+
+
 def reconstruct_code(
     completion: str,
     *,
@@ -3513,6 +3828,9 @@ def _stage_reward_profile(stage_name: str) -> Dict[str, float]:
             "dense_scale": STAGE2_DENSE_SCALE,
             "prev_group_scale": STAGE2_PREV_GROUP_SCALE,
             "best_group_scale": STAGE2_BEST_GROUP_SCALE,
+            "global_baseline_blend": STAGE2_GLOBAL_BASELINE_BLEND,
+            "backbone_prev_group_scale": STAGE2_BACKBONE_PREV_GROUP_SCALE,
+            "backbone_best_group_scale": STAGE2_BACKBONE_BEST_GROUP_SCALE,
             "goal_best_scale": STAGE2_GOAL_BEST_SCALE,
             "goal_match_scale": STAGE2_GOAL_MATCH_SCALE,
             "structure_scale": STAGE2_STRUCTURE_SCALE,
@@ -3526,6 +3844,9 @@ def _stage_reward_profile(stage_name: str) -> Dict[str, float]:
         "dense_scale": STAGE3_DENSE_SCALE,
         "prev_group_scale": STAGE3_PREV_GROUP_SCALE,
         "best_group_scale": STAGE3_BEST_GROUP_SCALE,
+        "global_baseline_blend": STAGE3_GLOBAL_BASELINE_BLEND,
+        "backbone_prev_group_scale": STAGE3_BACKBONE_PREV_GROUP_SCALE,
+        "backbone_best_group_scale": STAGE3_BACKBONE_BEST_GROUP_SCALE,
         "goal_best_scale": STAGE3_GOAL_BEST_SCALE,
         "goal_match_scale": STAGE3_GOAL_MATCH_SCALE,
         "structure_scale": STAGE3_STRUCTURE_SCALE,
@@ -3607,11 +3928,14 @@ def _recompute_discovery_reward(
         float(res.get("r_dense", 0.0) or 0.0)
         + float(res.get("r_prev_group", 0.0) or 0.0)
         + float(res.get("r_best_group", 0.0) or 0.0)
+        + float(res.get("r_prev_backbone_group", 0.0) or 0.0)
+        + float(res.get("r_best_backbone_group", 0.0) or 0.0)
         + float(res.get("r_goal_best", 0.0) or 0.0)
         + float(res.get("r_generalization", 0.0) or 0.0)
         + float(res.get("r_structure_group", 0.0) or 0.0)
         + float(res.get("r_structure_archive", 0.0) or 0.0)
         + float(res.get("r_descriptor_diversity", 0.0) or 0.0)
+        + float(res.get("r_cnn_diversity", 0.0) or 0.0)
         + float(res.get("r_batch_elite", 0.0) or 0.0)
         + float(res.get("r_repeat_family", 0.0) or 0.0)
         + float(res.get("r_plain_fuse_penalty", 0.0) or 0.0)
@@ -3717,6 +4041,7 @@ def _attach_group_context(
             "train_acc_gain": None,
             "train_acc_improved": False,
             "group_baseline_train_acc": group_context["group_baseline_train_acc"],
+            "global_group_baseline_reward_target_acc": group_context["group_baseline_reward_target_acc"],
             "group_train_acc_gain": None,
             "group_train_acc_improved": False,
             "reward_target_metric": _stage_reward_target_metric(group_context.get("current_stage_name", current_stage_name)),
@@ -3728,8 +4053,11 @@ def _attach_group_context(
             "training_context_metric_name": "best_epoch_loss",
             "training_context_metric_value": None,
             "group_baseline_reward_target_acc": group_context["group_baseline_reward_target_acc"],
+            "group_backbone_baseline_reward_target_acc": None,
             "group_reward_target_gain": None,
             "group_reward_target_improved": False,
+            "backbone_reward_target_gain": None,
+            "backbone_reward_target_improved": False,
             "reward_batch_index": group_context["reward_batch_index"],
             "reward_group_id": group_context["reward_group_id"],
             "group_warmup": group_context["group_warmup"],
@@ -3741,10 +4069,13 @@ def _attach_group_context(
             "best_closed_group_mean_reward_target_acc": group_context["best_closed_group_mean_reward_target_acc"],
             "best_closed_group_mean_train_acc": group_context["best_closed_group_mean_train_acc"],
             "best_closed_group_mean_test_acc": group_context["best_closed_group_mean_test_acc"],
+            "best_backbone_group_mean_reward_target_acc": None,
             "best_reward_target_for_goal": None,
             "r_dense": 0.0,
             "r_prev_group": 0.0,
             "r_best_group": 0.0,
+            "r_prev_backbone_group": 0.0,
+            "r_best_backbone_group": 0.0,
             "r_goal_best": 0.0,
             "r_goal_match": 0.0,
             "r_trainset_novelty": 0.0,
@@ -3752,6 +4083,7 @@ def _attach_group_context(
             "r_structure_group": 0.0,
             "r_structure_archive": 0.0,
             "r_descriptor_diversity": 0.0,
+            "r_cnn_diversity": 0.0,
             "r_batch_elite": 0.0,
             "r_repeat_family": 0.0,
             "r_plain_fuse_penalty": 0.0,
@@ -3766,8 +4098,13 @@ def _attach_group_context(
             "goal_tag_hit_rate": 0.0,
             "prev_target_reward_target_acc": None,
             "best_target_reward_target_acc": None,
+            "backbone_prev_target_reward_target_acc": None,
+            "backbone_best_target_reward_target_acc": None,
             "prev_target_train_acc": None,
             "best_target_train_acc": None,
+            "backbone_signature": build_backbone_signature(res.get("backbone_model_names")),
+            "cnn_signature": str(res.get("cnn_signature") or ""),
+            "cnn_expr": str(res.get("cnn_expr") or ""),
         },
     )
 
@@ -3781,11 +4118,15 @@ def _attach_group_context(
             "r_dense": res.get("r_dense", 0.0),
             "r_prev_group": res.get("r_prev_group", 0.0),
             "r_best_group": res.get("r_best_group", 0.0),
+            "r_prev_backbone_group": res.get("r_prev_backbone_group", 0.0),
+            "r_best_backbone_group": res.get("r_best_backbone_group", 0.0),
             "r_goal_best": res.get("r_goal_best", 0.0),
             "r_goal_match": res.get("r_goal_match", 0.0),
             "r_generalization": res.get("r_generalization", 0.0),
             "r_structure_group": res.get("r_structure_group", 0.0),
             "r_structure_archive": res.get("r_structure_archive", 0.0),
+            "r_descriptor_diversity": res.get("r_descriptor_diversity", 0.0),
+            "r_cnn_diversity": res.get("r_cnn_diversity", 0.0),
             "r_batch_elite": res.get("r_batch_elite", 0.0),
             "r_repeat_family": res.get("r_repeat_family", 0.0),
             "r_plain_fuse_penalty": res.get("r_plain_fuse_penalty", 0.0),
@@ -3801,9 +4142,12 @@ def _attach_group_context(
             "batch_same_family_count": 0,
             "group_baseline_train_acc": group_context["group_baseline_train_acc"],
             "group_baseline_reward_target_acc": group_context["group_baseline_reward_target_acc"],
+            "global_group_baseline_reward_target_acc": group_context["group_baseline_reward_target_acc"],
+            "group_backbone_baseline_reward_target_acc": res.get("group_backbone_baseline_reward_target_acc"),
             "best_closed_group_mean_train_acc": group_context["best_closed_group_mean_train_acc"],
             "best_closed_group_mean_reward_target_acc": group_context["best_closed_group_mean_reward_target_acc"],
             "best_closed_group_mean_test_acc": group_context["best_closed_group_mean_test_acc"],
+            "best_backbone_group_mean_reward_target_acc": res.get("best_backbone_group_mean_reward_target_acc"),
             "prev_target_train_acc": res.get("prev_target_train_acc"),
             "best_target_train_acc": res.get("best_target_train_acc"),
             "group_train_acc_gain": res.get("group_train_acc_gain"),
@@ -3812,11 +4156,15 @@ def _attach_group_context(
             "reward_target_value": res.get("reward_target_value"),
             "group_reward_target_gain": res.get("group_reward_target_gain"),
             "group_reward_target_improved": res.get("group_reward_target_improved", False),
+            "backbone_reward_target_gain": res.get("backbone_reward_target_gain"),
+            "backbone_reward_target_improved": res.get("backbone_reward_target_improved", False),
             "goal_tag_hit_count": res.get("goal_tag_hit_count", 0),
             "goal_tag_total_count": res.get("goal_tag_total_count", 0),
             "goal_tag_hit_rate": res.get("goal_tag_hit_rate", 0.0),
             "prev_target_reward_target_acc": res.get("prev_target_reward_target_acc"),
             "best_target_reward_target_acc": res.get("best_target_reward_target_acc"),
+            "backbone_prev_target_reward_target_acc": res.get("backbone_prev_target_reward_target_acc"),
+            "backbone_best_target_reward_target_acc": res.get("backbone_best_target_reward_target_acc"),
             "reward_batch_index": group_context["reward_batch_index"],
             "reward_group_id": group_context["reward_group_id"],
             "group_warmup": group_context["group_warmup"],
@@ -3824,6 +4172,9 @@ def _attach_group_context(
             "current_stage_index": group_context.get("current_stage_index", _current_stage_index()),
             "stage_uses_formal_eval": _stage_uses_formal_eval(group_context.get("current_stage_name", current_stage_name)),
             "stage_uses_static_only": _stage_uses_static_only(group_context.get("current_stage_name", current_stage_name)),
+            "backbone_signature": res.get("backbone_signature", build_backbone_signature(res.get("backbone_model_names"))),
+            "cnn_signature": res.get("cnn_signature", ""),
+            "cnn_expr": res.get("cnn_expr", ""),
         },
     )
     return res
@@ -3838,9 +4189,14 @@ def base_discovery_reward_fn(
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
     batch_descriptor_keys: List[str] = None,
+    batch_backbone_signatures: List[str] = None,
+    batch_cnn_signatures: List[str] = None,
     prompt_goal_tags: List[str] = None,
     archive_snapshot_family_counts: Optional[Dict[str, int]] = None,
     archive_snapshot_descriptor_counts: Optional[Dict[str, int]] = None,
+    archive_snapshot_backbone_signature_counts: Optional[Dict[str, int]] = None,
+    archive_snapshot_cnn_signature_counts: Optional[Dict[str, int]] = None,
+    archive_snapshot_backbone_cnn_pair_counts: Optional[Dict[str, int]] = None,
     group_baseline_train_acc: Optional[float] = None,
     group_baseline_reward_target_acc: Optional[float] = None,
     reward_batch_index: Optional[int] = None,
@@ -3922,6 +4278,10 @@ def base_discovery_reward_fn(
     if not res.get("built_ok"):
         res["r_build_partial"] = _compute_build_partial_reward(res)
     res.setdefault("backbone_model_names", backbone_model_names)
+    backbone_signature = build_backbone_signature(backbone_model_names)
+    cnn_signature = str(getattr(graph_info, "cnn_signature", "") or "incomplete_cnn")
+    cnn_expr = str(getattr(graph_info, "cnn_expr", "") or "IncompleteCNN")
+    backbone_cnn_pair_key = _backbone_cnn_pair_key(backbone_signature, cnn_signature)
 
     training_context = summarize_stage_training_context(stage_name)
     shallow_one_shot = is_shallow_one_shot_fuse(graph_info)
@@ -3933,11 +4293,77 @@ def base_discovery_reward_fn(
         if batch_descriptor_keys and graph_info.parse_ok
         else 0
     )
+    batch_same_backbone_count = (
+        batch_backbone_signatures.count(backbone_signature)
+        if batch_backbone_signatures and graph_info.parse_ok
+        else 0
+    )
+    batch_same_backbone_cnn_count = (
+        sum(
+            1
+            for batch_backbone_signature, batch_cnn_signature in zip(batch_backbone_signatures or [], batch_cnn_signatures or [])
+            if batch_backbone_signature == backbone_signature and batch_cnn_signature == cnn_signature
+        )
+        if graph_info.parse_ok
+        else 0
+    )
     archive_snapshot_family_freq = int((archive_snapshot_family_counts or {}).get(graph_info.family_hash, 0)) if graph_info.parse_ok else 0
     archive_snapshot_descriptor_freq = (
         int((archive_snapshot_descriptor_counts or {}).get(graph_info.descriptor_key, 0))
         if graph_info.parse_ok
         else 0
+    )
+    archive_snapshot_backbone_freq = (
+        int((archive_snapshot_backbone_signature_counts or {}).get(backbone_signature, 0))
+        if graph_info.parse_ok
+        else 0
+    )
+    archive_snapshot_cnn_freq = (
+        int((archive_snapshot_cnn_signature_counts or {}).get(cnn_signature, 0))
+        if graph_info.parse_ok
+        else 0
+    )
+    archive_snapshot_backbone_cnn_freq = (
+        int((archive_snapshot_backbone_cnn_pair_counts or {}).get(backbone_cnn_pair_key, 0))
+        if graph_info.parse_ok
+        else 0
+    )
+    global_group_baseline_reward_target_acc = (
+        group_baseline_reward_target_acc
+        if group_baseline_reward_target_acc is not None
+        else prev_closed_group_mean_reward_target_acc
+    )
+    use_backbone_baseline = bool(
+        graph_info.parse_ok
+        and archive_snapshot_backbone_freq >= BACKBONE_BASELINE_MIN_ARCHIVE_SAMPLES
+        and backbone_signature in prev_closed_group_mean_reward_target_by_backbone
+    )
+    backbone_group_baseline_reward_target_acc = (
+        prev_closed_group_mean_reward_target_by_backbone.get(backbone_signature)
+        if use_backbone_baseline
+        else None
+    )
+    best_backbone_group_mean_reward_target_acc = (
+        best_closed_group_mean_reward_target_by_backbone.get(backbone_signature)
+        if graph_info.parse_ok and archive_snapshot_backbone_freq >= BACKBONE_BASELINE_MIN_ARCHIVE_SAMPLES
+        else None
+    )
+    effective_group_baseline_reward_target_acc = (
+        backbone_group_baseline_reward_target_acc
+        if backbone_group_baseline_reward_target_acc is not None
+        else global_group_baseline_reward_target_acc
+    )
+    dominant_backbone_cnn_signature, dominant_backbone_cnn_share = _dominant_counter_entry(
+        {
+            str(key): int(value)
+            for key, value in (archive_snapshot_backbone_cnn_pair_counts or {}).items()
+            if str(key).startswith(f"{backbone_signature}::")
+        }
+    )
+    dominant_backbone_cnn_signature = (
+        dominant_backbone_cnn_signature.split("::", 1)[1]
+        if dominant_backbone_cnn_signature and "::" in dominant_backbone_cnn_signature
+        else dominant_backbone_cnn_signature
     )
 
     novel_vs_trainset_family = False
@@ -3962,6 +4388,8 @@ def base_discovery_reward_fn(
     r_dense = 0.0
     r_prev_group = 0.0
     r_best_group = 0.0
+    r_prev_backbone_group = 0.0
+    r_best_backbone_group = 0.0
     r_goal_best = 0.0
     r_goal_match = 0.0
     r_trainset_novelty = 0.0
@@ -3975,28 +4403,32 @@ def base_discovery_reward_fn(
     r_history_context = 0.0
     r_no_progress_penalty = 0.0
     r_descriptor_diversity = 0.0
+    r_cnn_diversity = 0.0
     r_formal_success_signal = 0.0
     stage1_validity_scale = 0.0
     dominant_family_repeat = False
     dominant_descriptor_repeat = False
+    dominant_cnn_repeat = False
     plain_parallel_repeat = False
     descriptor_reward_cap_applied = False
+    cnn_reward_cap_applied = False
     executable_candidate = _is_executable_candidate(res, graph_info)
     formal_success_candidate = _is_trainable_candidate(res, graph_info)
     has_formal_epoch = _has_completed_formal_epoch(res)
     discovery_candidate = False
     goal_tag_hit_count, goal_tag_total_count, goal_tag_hit_rate = _goal_tag_match_stats(graph_info, prompt_goal_tags)
-    effective_group_baseline_reward_target_acc = (
-        group_baseline_reward_target_acc
-        if group_baseline_reward_target_acc is not None
-        else prev_closed_group_mean_reward_target_acc
-    )
     prev_target_train_acc = None
     best_target_train_acc = None
     prev_target_reward_target_acc = None
     best_target_reward_target_acc = None
+    backbone_prev_target_reward_target_acc = None
+    backbone_best_target_reward_target_acc = None
     beat_prev_target = False
     beat_best_target = False
+    beat_prev_backbone_target = False
+    beat_best_backbone_target = False
+    backbone_reward_target_gain = None
+    backbone_reward_target_improved = False
 
     if executable_candidate:
         novel_vs_trainset_family = graph_info.family_hash not in train_family_hashes
@@ -4187,6 +4619,9 @@ def base_discovery_reward_fn(
         if (reward_target_value is not None) and (effective_group_baseline_reward_target_acc is not None) and (not group_warmup):
             group_reward_target_gain = float(reward_target_value - effective_group_baseline_reward_target_acc)
             group_reward_target_improved = bool(group_reward_target_gain >= GROUP_IMPROVEMENT_DELTA)
+        if (reward_target_value is not None) and (backbone_group_baseline_reward_target_acc is not None) and (not group_warmup):
+            backbone_reward_target_gain = float(reward_target_value - backbone_group_baseline_reward_target_acc)
+            backbone_reward_target_improved = bool(backbone_reward_target_gain >= GROUP_IMPROVEMENT_DELTA)
 
         if has_formal_epoch and reward_target_value is not None:
             train_acc_value = float(train_acc or 0.0)
@@ -4202,32 +4637,66 @@ def base_discovery_reward_fn(
                 prev_target_train_acc = float(group_baseline_train_acc) + GROUP_IMPROVEMENT_DELTA
             if (not group_warmup) and (best_closed_group_mean_train_acc is not None):
                 best_target_train_acc = float(best_closed_group_mean_train_acc) + BEST_GROUP_REFRESH_DELTA
-            if (not group_warmup) and (effective_group_baseline_reward_target_acc is not None):
-                prev_target_reward_target_acc = float(effective_group_baseline_reward_target_acc) + GROUP_IMPROVEMENT_DELTA
+            if (not group_warmup) and (global_group_baseline_reward_target_acc is not None):
+                prev_target_reward_target_acc = float(global_group_baseline_reward_target_acc) + GROUP_IMPROVEMENT_DELTA
                 beat_prev_target = reward_target_float >= prev_target_reward_target_acc
-                r_prev_group = stage_profile["prev_group_scale"] * _clip(
+                global_prev_group_reward = stage_profile["prev_group_scale"] * _clip(
                     10.0 * (reward_target_float - prev_target_reward_target_acc),
                     -1.8,
                     1.8,
                 )
+                r_prev_group = global_prev_group_reward
+                if backbone_group_baseline_reward_target_acc is not None:
+                    r_prev_group *= float(stage_profile["global_baseline_blend"])
+                    backbone_prev_target_reward_target_acc = (
+                        float(backbone_group_baseline_reward_target_acc) + GROUP_IMPROVEMENT_DELTA
+                    )
+                    beat_prev_backbone_target = reward_target_float >= backbone_prev_target_reward_target_acc
+                    r_prev_backbone_group = stage_profile["backbone_prev_group_scale"] * _clip(
+                        10.0 * (reward_target_float - backbone_prev_target_reward_target_acc),
+                        -1.8,
+                        1.8,
+                    )
             if (not group_warmup) and (best_closed_group_mean_reward_target_acc is not None):
                 best_target_reward_target_acc = float(best_closed_group_mean_reward_target_acc) + BEST_GROUP_REFRESH_DELTA
                 beat_best_target = reward_target_float >= best_target_reward_target_acc
-                r_best_group = stage_profile["best_group_scale"] * _clip(
+                global_best_group_reward = stage_profile["best_group_scale"] * _clip(
                     12.0 * (reward_target_float - best_target_reward_target_acc),
                     -1.2,
                     1.2,
                 )
+                r_best_group = global_best_group_reward
+                if best_backbone_group_mean_reward_target_acc is not None:
+                    r_best_group *= float(stage_profile["global_baseline_blend"])
+                    backbone_best_target_reward_target_acc = (
+                        float(best_backbone_group_mean_reward_target_acc) + BEST_GROUP_REFRESH_DELTA
+                    )
+                    beat_best_backbone_target = reward_target_float >= backbone_best_target_reward_target_acc
+                    r_best_backbone_group = stage_profile["backbone_best_group_scale"] * _clip(
+                        12.0 * (reward_target_float - backbone_best_target_reward_target_acc),
+                        -1.2,
+                        1.2,
+                    )
             if (
                 (not group_warmup)
                 and (best_reward_target_for_goal is not None)
                 and reward_target_float >= float(best_reward_target_for_goal) + GOAL_REFRESH_DELTA
             ):
                 r_goal_best = stage_profile["goal_best_scale"] * GOAL_REFRESH_BONUS
+            effective_prev_target_reward_target_acc = (
+                backbone_prev_target_reward_target_acc
+                if backbone_prev_target_reward_target_acc is not None
+                else prev_target_reward_target_acc
+            )
+            effective_beat_prev_target = (
+                beat_prev_backbone_target
+                if backbone_prev_target_reward_target_acc is not None
+                else beat_prev_target
+            )
             if (
                 (not group_warmup)
-                and prev_target_reward_target_acc is not None
-                and not beat_prev_target
+                and effective_prev_target_reward_target_acc is not None
+                and not effective_beat_prev_target
             ):
                 r_no_progress_penalty = stage_profile["no_progress_scale"] * NO_PROGRESS_PENALTY
             if (frozen_train_acc is not None) and (frozen_test_acc is not None):
@@ -4238,7 +4707,13 @@ def base_discovery_reward_fn(
                     0.0,
                 )
 
-        descriptor_progress_refresh = bool(beat_prev_target or beat_best_target or r_goal_best > 0.0)
+        descriptor_progress_refresh = bool(
+            beat_prev_target
+            or beat_best_target
+            or beat_prev_backbone_target
+            or beat_best_backbone_target
+            or r_goal_best > 0.0
+        )
         if executable_candidate and graph_info.parse_ok and graph_info.descriptor_key:
             if batch_same_descriptor_count == 1:
                 r_descriptor_diversity += STAGE23_DESCRIPTOR_BATCH_UNIQUE_BONUS
@@ -4276,6 +4751,45 @@ def base_discovery_reward_fn(
                 else:
                     r_descriptor_diversity += STAGE23_DOMINANT_DESCRIPTOR_REPEAT_PENALTY
 
+        if executable_candidate and graph_info.parse_ok and cnn_signature:
+            if batch_same_backbone_cnn_count == 1:
+                r_cnn_diversity += STAGE23_CNN_BATCH_UNIQUE_BONUS
+            elif batch_same_backbone_cnn_count > 1:
+                r_cnn_diversity += max(
+                    STAGE23_CNN_BATCH_REPEAT_MAX_PENALTY,
+                    STAGE23_CNN_BATCH_REPEAT_STEP_PENALTY * float(batch_same_backbone_cnn_count - 1),
+                )
+
+            if archive_snapshot_backbone_cnn_freq <= 0:
+                r_cnn_diversity += STAGE23_CNN_ARCHIVE_NOVEL_BONUS
+            elif archive_snapshot_backbone_cnn_freq > 1:
+                r_cnn_diversity += max(
+                    STAGE23_CNN_ARCHIVE_REPEAT_MAX_PENALTY,
+                    STAGE23_CNN_ARCHIVE_REPEAT_STEP_PENALTY * float(archive_snapshot_backbone_cnn_freq - 1),
+                )
+
+            if (
+                (not group_warmup)
+                and archive_snapshot_backbone_freq >= BACKBONE_BASELINE_MIN_ARCHIVE_SAMPLES
+                and dominant_backbone_cnn_signature
+                and cnn_signature != dominant_backbone_cnn_signature
+                and float(dominant_backbone_cnn_share or 0.0) >= STAGE23_DOMINANT_CNN_SOFT_SHARE
+            ):
+                r_cnn_diversity += STAGE23_NON_DOMINANT_CNN_BONUS
+            elif (
+                (not group_warmup)
+                and archive_snapshot_backbone_freq >= BACKBONE_BASELINE_MIN_ARCHIVE_SAMPLES
+                and dominant_backbone_cnn_signature
+                and cnn_signature == dominant_backbone_cnn_signature
+                and float(dominant_backbone_cnn_share or 0.0) >= STAGE23_DOMINANT_CNN_SOFT_SHARE
+                and not descriptor_progress_refresh
+            ):
+                dominant_cnn_repeat = True
+                if float(dominant_backbone_cnn_share or 0.0) >= STAGE23_DOMINANT_CNN_STRONG_SHARE:
+                    r_cnn_diversity += STAGE23_DOMINANT_CNN_REPEAT_STRONG_PENALTY
+                else:
+                    r_cnn_diversity += STAGE23_DOMINANT_CNN_REPEAT_PENALTY
+
         r_goal_match = stage_profile["goal_match_scale"] * GOAL_MATCH_REWARD_SCALE * goal_tag_hit_rate
         r_template_penalty = _template_penalty(
             stage_name=stage_name,
@@ -4307,11 +4821,14 @@ def base_discovery_reward_fn(
             + r_formal_success_signal
             + r_prev_group
             + r_best_group
+            + r_prev_backbone_group
+            + r_best_backbone_group
             + r_goal_best
             + r_generalization
             + r_structure_group
             + r_structure_archive
             + r_descriptor_diversity
+            + r_cnn_diversity
             + r_batch_elite
             + r_repeat_family
             + r_plain_fuse_penalty
@@ -4321,11 +4838,24 @@ def base_discovery_reward_fn(
         )
         r_tiebreak = r_goal_match
         total_reward = _clip(r_primary + r_tiebreak, -2.0, 2.0)
-        if has_formal_epoch and prev_target_reward_target_acc is not None and not beat_prev_target:
+        effective_prev_target_reward_target_acc = (
+            backbone_prev_target_reward_target_acc
+            if backbone_prev_target_reward_target_acc is not None
+            else prev_target_reward_target_acc
+        )
+        effective_beat_prev_target = (
+            beat_prev_backbone_target
+            if backbone_prev_target_reward_target_acc is not None
+            else beat_prev_target
+        )
+        if has_formal_epoch and effective_prev_target_reward_target_acc is not None and not effective_beat_prev_target:
             total_reward = min(total_reward, stage_profile["non_improving_cap"])
         if has_formal_epoch and dominant_descriptor_repeat:
             total_reward = min(total_reward, stage_profile["descriptor_non_improving_cap"])
             descriptor_reward_cap_applied = True
+        if has_formal_epoch and dominant_cnn_repeat:
+            total_reward = min(total_reward, stage_profile["descriptor_non_improving_cap"])
+            cnn_reward_cap_applied = True
         total_reward = _apply_executability_clamp(res, total_reward, graph_info)
 
     reward_target_value_for_payload = reward_target_value
@@ -4351,9 +4881,13 @@ def base_discovery_reward_fn(
     res['group_train_acc_improved'] = group_train_acc_improved
     res['reward_target_metric'] = reward_metric_for_payload
     res['reward_target_value'] = reward_target_value_for_payload
+    res['global_group_baseline_reward_target_acc'] = global_group_baseline_reward_target_acc
     res['group_baseline_reward_target_acc'] = effective_group_baseline_reward_target_acc
+    res['group_backbone_baseline_reward_target_acc'] = backbone_group_baseline_reward_target_acc
     res['group_reward_target_gain'] = group_reward_target_gain
     res['group_reward_target_improved'] = group_reward_target_improved
+    res['backbone_reward_target_gain'] = backbone_reward_target_gain
+    res['backbone_reward_target_improved'] = backbone_reward_target_improved
     res['reward_batch_index'] = reward_batch_index
     res['reward_group_id'] = reward_group_id
     res['group_warmup'] = group_warmup
@@ -4365,10 +4899,13 @@ def base_discovery_reward_fn(
     res['best_closed_group_mean_reward_target_acc'] = best_closed_group_mean_reward_target_acc
     res['best_closed_group_mean_train_acc'] = best_closed_group_mean_train_acc
     res['best_closed_group_mean_test_acc'] = best_closed_group_mean_test_acc
+    res['best_backbone_group_mean_reward_target_acc'] = best_backbone_group_mean_reward_target_acc
     res['best_reward_target_for_goal'] = best_reward_target_for_goal
     res['r_dense'] = r_dense
     res['r_prev_group'] = r_prev_group
     res['r_best_group'] = r_best_group
+    res['r_prev_backbone_group'] = r_prev_backbone_group
+    res['r_best_backbone_group'] = r_best_backbone_group
     res['r_goal_best'] = r_goal_best
     res['r_goal_match'] = r_goal_match
     res['r_trainset_novelty'] = r_trainset_novelty
@@ -4376,6 +4913,7 @@ def base_discovery_reward_fn(
     res['r_structure_group'] = r_structure_group
     res['r_structure_archive'] = r_structure_archive
     res['r_descriptor_diversity'] = r_descriptor_diversity
+    res['r_cnn_diversity'] = r_cnn_diversity
     res['r_formal_success_signal'] = r_formal_success_signal
     res['r_batch_elite'] = r_batch_elite
     res['r_repeat_family'] = r_repeat_family
@@ -4391,6 +4929,8 @@ def base_discovery_reward_fn(
     res['goal_tag_hit_rate'] = goal_tag_hit_rate
     res['prev_target_reward_target_acc'] = prev_target_reward_target_acc
     res['best_target_reward_target_acc'] = best_target_reward_target_acc
+    res['backbone_prev_target_reward_target_acc'] = backbone_prev_target_reward_target_acc
+    res['backbone_best_target_reward_target_acc'] = backbone_best_target_reward_target_acc
     res['prev_target_train_acc'] = prev_target_train_acc
     res['best_target_train_acc'] = best_target_train_acc
     res['executable_candidate'] = executable_candidate
@@ -4401,12 +4941,24 @@ def base_discovery_reward_fn(
     res['family_id'] = graph_info.family_id
     res['family_expr'] = graph_info.family_expr
     res['family_hash'] = graph_info.family_hash
+    res['backbone_signature'] = backbone_signature
+    res['cnn_signature'] = cnn_signature
+    res['cnn_expr'] = cnn_expr
+    res['archive_snapshot_backbone_freq'] = archive_snapshot_backbone_freq
+    res['archive_snapshot_cnn_freq'] = archive_snapshot_cnn_freq
+    res['archive_snapshot_backbone_cnn_freq'] = archive_snapshot_backbone_cnn_freq
+    res['batch_same_backbone_count'] = batch_same_backbone_count
+    res['batch_same_backbone_cnn_count'] = batch_same_backbone_cnn_count
     res['descriptor_key'] = graph_info.descriptor_key
     res['dominant_descriptor_key'] = dominant_descriptor_key
     res['dominant_descriptor_share'] = dominant_descriptor_share
+    res['dominant_backbone_cnn_signature'] = dominant_backbone_cnn_signature
+    res['dominant_backbone_cnn_share'] = dominant_backbone_cnn_share
     res['unique_descriptor_count'] = len(descriptor_archive_counts)
     res['dominant_descriptor_repeat'] = dominant_descriptor_repeat
+    res['dominant_cnn_repeat'] = dominant_cnn_repeat
     res['descriptor_reward_cap_applied'] = descriptor_reward_cap_applied
+    res['cnn_reward_cap_applied'] = cnn_reward_cap_applied
     res['history_exploration_pressure'] = float(training_context.get('exploration_pressure') or 0.0)
     res['minimal_init_template'] = minimal_init_template
     res['graph_expr'] = graph_info.graph_expr
@@ -4420,12 +4972,15 @@ def base_discovery_reward_fn(
         'r_formal_success_signal': r_formal_success_signal,
         'r_prev_group': r_prev_group,
         'r_best_group': r_best_group,
+        'r_prev_backbone_group': r_prev_backbone_group,
+        'r_best_backbone_group': r_best_backbone_group,
         'r_goal_best': r_goal_best,
         'r_goal_match': r_goal_match,
         'r_generalization': r_generalization,
         'r_structure_group': r_structure_group,
         'r_structure_archive': r_structure_archive,
         'r_descriptor_diversity': r_descriptor_diversity,
+        'r_cnn_diversity': r_cnn_diversity,
         'r_batch_elite': r_batch_elite,
         'r_repeat_family': r_repeat_family,
         'r_plain_fuse_penalty': r_plain_fuse_penalty,
@@ -4436,24 +4991,31 @@ def base_discovery_reward_fn(
         'batch_elite_tier': "none",
         'batch_elite_threshold_passed': False,
         'group_baseline_train_acc': group_baseline_train_acc,
+        'global_group_baseline_reward_target_acc': global_group_baseline_reward_target_acc,
         'group_baseline_reward_target_acc': effective_group_baseline_reward_target_acc,
+        'group_backbone_baseline_reward_target_acc': backbone_group_baseline_reward_target_acc,
         'reward_target_metric': reward_metric_for_payload,
         'reward_target_value': reward_target_value_for_payload,
         'best_closed_group_mean_reward_target_acc': best_closed_group_mean_reward_target_acc,
         'best_closed_group_mean_train_acc': best_closed_group_mean_train_acc,
         'best_closed_group_mean_test_acc': best_closed_group_mean_test_acc,
+        'best_backbone_group_mean_reward_target_acc': best_backbone_group_mean_reward_target_acc,
         'best_reward_target_for_goal': best_reward_target_for_goal,
         'goal_tag_hit_count': goal_tag_hit_count,
         'goal_tag_total_count': goal_tag_total_count,
         'goal_tag_hit_rate': goal_tag_hit_rate,
         'prev_target_reward_target_acc': prev_target_reward_target_acc,
         'best_target_reward_target_acc': best_target_reward_target_acc,
+        'backbone_prev_target_reward_target_acc': backbone_prev_target_reward_target_acc,
+        'backbone_best_target_reward_target_acc': backbone_best_target_reward_target_acc,
         'prev_target_train_acc': prev_target_train_acc,
         'best_target_train_acc': best_target_train_acc,
         'group_train_acc_gain': group_train_acc_gain,
         'group_train_acc_improved': group_train_acc_improved,
         'group_reward_target_gain': group_reward_target_gain,
         'group_reward_target_improved': group_reward_target_improved,
+        'backbone_reward_target_gain': backbone_reward_target_gain,
+        'backbone_reward_target_improved': backbone_reward_target_improved,
         'reward_batch_index': reward_batch_index,
         'reward_group_id': reward_group_id,
         'group_warmup': group_warmup,
@@ -4461,19 +5023,31 @@ def base_discovery_reward_fn(
         'batch_same_graph_count': batch_same_graph_count,
         'batch_same_family_count': batch_same_family_count,
         'batch_same_descriptor_count': batch_same_descriptor_count,
+        'batch_same_backbone_count': batch_same_backbone_count,
+        'batch_same_backbone_cnn_count': batch_same_backbone_cnn_count,
         'archive_snapshot_family_freq': archive_snapshot_family_freq,
         'archive_snapshot_descriptor_freq': archive_snapshot_descriptor_freq,
+        'archive_snapshot_backbone_freq': archive_snapshot_backbone_freq,
+        'archive_snapshot_cnn_freq': archive_snapshot_cnn_freq,
+        'archive_snapshot_backbone_cnn_freq': archive_snapshot_backbone_cnn_freq,
         'macro_structure_ok': passes_macro_structure_gate(graph_info),
         'is_multi_stage_architecture': is_multi_stage_architecture(graph_info),
         'is_shallow_one_shot_fuse': shallow_one_shot,
         'family_id': graph_info.family_id,
         'family_hash': graph_info.family_hash,
+        'backbone_signature': backbone_signature,
+        'cnn_signature': cnn_signature,
+        'cnn_expr': cnn_expr,
         'descriptor_key': graph_info.descriptor_key,
         'dominant_descriptor_key': dominant_descriptor_key,
         'dominant_descriptor_share': dominant_descriptor_share,
+        'dominant_backbone_cnn_signature': dominant_backbone_cnn_signature,
+        'dominant_backbone_cnn_share': dominant_backbone_cnn_share,
         'unique_descriptor_count': len(descriptor_archive_counts),
         'dominant_descriptor_repeat': dominant_descriptor_repeat,
+        'dominant_cnn_repeat': dominant_cnn_repeat,
         'descriptor_reward_cap_applied': descriptor_reward_cap_applied,
+        'cnn_reward_cap_applied': cnn_reward_cap_applied,
         'history_exploration_pressure': float(training_context.get('exploration_pressure') or 0.0),
         'minimal_init_template': minimal_init_template,
         'depth': graph_info.depth,
@@ -4511,9 +5085,14 @@ def reward_fn(
     batch_graph_hashes: List[str] = None,
     batch_family_hashes: List[str] = None,
     batch_descriptor_keys: List[str] = None,
+    batch_backbone_signatures: List[str] = None,
+    batch_cnn_signatures: List[str] = None,
     prompt_goal_tags: List[str] = None,
     archive_snapshot_family_counts: Optional[Dict[str, int]] = None,
     archive_snapshot_descriptor_counts: Optional[Dict[str, int]] = None,
+    archive_snapshot_backbone_signature_counts: Optional[Dict[str, int]] = None,
+    archive_snapshot_cnn_signature_counts: Optional[Dict[str, int]] = None,
+    archive_snapshot_backbone_cnn_pair_counts: Optional[Dict[str, int]] = None,
     group_baseline_train_acc: Optional[float] = None,
     group_baseline_reward_target_acc: Optional[float] = None,
     reward_batch_index: Optional[int] = None,
@@ -4531,9 +5110,14 @@ def reward_fn(
         batch_graph_hashes=batch_graph_hashes,
         batch_family_hashes=batch_family_hashes,
         batch_descriptor_keys=batch_descriptor_keys,
+        batch_backbone_signatures=batch_backbone_signatures,
+        batch_cnn_signatures=batch_cnn_signatures,
         prompt_goal_tags=prompt_goal_tags,
         archive_snapshot_family_counts=archive_snapshot_family_counts,
         archive_snapshot_descriptor_counts=archive_snapshot_descriptor_counts,
+        archive_snapshot_backbone_signature_counts=archive_snapshot_backbone_signature_counts,
+        archive_snapshot_cnn_signature_counts=archive_snapshot_cnn_signature_counts,
+        archive_snapshot_backbone_cnn_pair_counts=archive_snapshot_backbone_cnn_pair_counts,
         group_baseline_train_acc=group_baseline_train_acc,
         group_baseline_reward_target_acc=group_baseline_reward_target_acc,
         reward_batch_index=reward_batch_index,
@@ -4549,9 +5133,6 @@ def _apply_batch_elite_bonuses(scored_results: List[Dict[str, Any]], group_conte
         return
 
     eligible: List[Tuple[float, Dict[str, Any]]] = []
-    threshold = None
-    if group_context["group_baseline_reward_target_acc"] is not None:
-        threshold = float(group_context["group_baseline_reward_target_acc"]) + GROUP_IMPROVEMENT_DELTA
 
     for item in scored_results:
         res = item["result"]
@@ -4569,6 +5150,14 @@ def _apply_batch_elite_bonuses(scored_results: List[Dict[str, Any]], group_conte
     elite_summaries: List[str] = []
     max_elites = min(len(BATCH_ELITE_SOFT_BONUSES), len(BATCH_ELITE_IMPROVING_BONUSES))
     for rank, (reward_target_float, item) in enumerate(eligible[:max_elites]):
+        threshold_baseline = _optional_float(
+            item["result"].get("group_backbone_baseline_reward_target_acc", item["result"].get("group_baseline_reward_target_acc"))
+        )
+        threshold = (
+            float(threshold_baseline) + GROUP_IMPROVEMENT_DELTA
+            if threshold_baseline is not None
+            else None
+        )
         threshold_passed = threshold is not None and reward_target_float >= threshold
         tier = "improving" if threshold_passed else "soft"
         bonus = (
@@ -4643,10 +5232,12 @@ def _prepare_local_reward_entries(
 ) -> List[Dict[str, Any]]:
     runtime_rank = _distributed_rank()
     batch_graph_infos: List[Any] = []
+    batch_backbone_model_names: List[List[str]] = []
     batch_prompt_goal_tags = [extract_prompt_goal_tags(prompt) for prompt in prompts]
 
     for i, completion in enumerate(completions):
         _, init_code, forward_code = extract_completion_blocks(completion)
+        backbone_model_names = _extract_backbone_model_names(init_code)
         if init_code and forward_code:
             graph_info = extract_graph_info(
                 init_code,
@@ -4656,6 +5247,7 @@ def _prepare_local_reward_entries(
         else:
             graph_info = None
         batch_graph_infos.append(graph_info)
+        batch_backbone_model_names.append(backbone_model_names)
 
     local_entries: List[Dict[str, Any]] = []
     for i, (prompt, completion) in enumerate(zip(prompts, completions)):
@@ -4667,6 +5259,13 @@ def _prepare_local_reward_entries(
                 "prompt": prompt,
                 "completion": completion,
                 "graph_info": graph_info,
+                "backbone_model_names": batch_backbone_model_names[i],
+                "backbone_signature": build_backbone_signature(batch_backbone_model_names[i]),
+                "cnn_signature": (
+                    str(getattr(graph_info, "cnn_signature", "") or "")
+                    if graph_info is not None
+                    else "incomplete_cnn"
+                ),
                 "prompt_goal_tags": batch_prompt_goal_tags[i],
                 "goal_key": primary_goal_key(batch_prompt_goal_tags[i]),
                 "seed_accuracy_baseline": seed_accuracy_baselines[i],
@@ -4904,6 +5503,9 @@ def _score_reward_entries(
     archive_snapshot_family_counts: Dict[str, int],
 ) -> List[Dict[str, Any]]:
     archive_snapshot_descriptor_counts = dict(descriptor_archive_counts)
+    archive_snapshot_backbone_signature_counts = dict(backbone_signature_archive_counts)
+    archive_snapshot_cnn_signature_counts = dict(cnn_signature_archive_counts)
+    archive_snapshot_backbone_cnn_pair_counts = dict(backbone_cnn_pair_archive_counts)
     batch_graph_hashes = [
         entry["graph_info"].graph_hash if entry.get("graph_info") and entry["graph_info"].parse_ok else "incomplete"
         for entry in entries
@@ -4914,6 +5516,14 @@ def _score_reward_entries(
     ]
     batch_descriptor_keys = [
         entry["graph_info"].descriptor_key if entry.get("graph_info") and entry["graph_info"].parse_ok else "incomplete"
+        for entry in entries
+    ]
+    batch_backbone_signatures = [
+        _entry_backbone_signature(entry)
+        for entry in entries
+    ]
+    batch_cnn_signatures = [
+        _entry_cnn_signature(entry)
         for entry in entries
     ]
     scored_results: List[Dict[str, Any]] = []
@@ -4931,9 +5541,14 @@ def _score_reward_entries(
                 batch_graph_hashes=batch_graph_hashes,
                 batch_family_hashes=batch_family_hashes,
                 batch_descriptor_keys=batch_descriptor_keys,
+                batch_backbone_signatures=batch_backbone_signatures,
+                batch_cnn_signatures=batch_cnn_signatures,
                 prompt_goal_tags=entry.get("prompt_goal_tags"),
                 archive_snapshot_family_counts=archive_snapshot_family_counts,
                 archive_snapshot_descriptor_counts=archive_snapshot_descriptor_counts,
+                archive_snapshot_backbone_signature_counts=archive_snapshot_backbone_signature_counts,
+                archive_snapshot_cnn_signature_counts=archive_snapshot_cnn_signature_counts,
+                archive_snapshot_backbone_cnn_pair_counts=archive_snapshot_backbone_cnn_pair_counts,
                 group_baseline_train_acc=group_context["group_baseline_train_acc"],
                 group_baseline_reward_target_acc=group_context["group_baseline_reward_target_acc"],
                 reward_batch_index=group_context["reward_batch_index"],
@@ -4998,6 +5613,9 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
         res = item["result"]
         score = float(item["score"])
         sig = res.get("signature", "unknown")
+        backbone_signature = _result_backbone_signature(res)
+        cnn_signature = _result_cnn_signature(res, graph_info)
+        backbone_cnn_pair_key = _backbone_cnn_pair_key(backbone_signature, cnn_signature)
 
         is_executable = _is_executable_candidate(res, graph_info)
         is_trainable = _is_trainable_candidate(res, graph_info)
@@ -5013,6 +5631,12 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
             descriptor_archive_key = str(res.get("descriptor_key") or getattr(graph_info, "descriptor_key", "") or "")
             if descriptor_archive_key:
                 descriptor_archive_counts[descriptor_archive_key] += 1
+            if backbone_signature:
+                backbone_signature_archive_counts[backbone_signature] += 1
+            if cnn_signature:
+                cnn_signature_archive_counts[cnn_signature] += 1
+            if backbone_signature and cnn_signature:
+                backbone_cnn_pair_archive_counts[backbone_cnn_pair_key] += 1
             motif_name_counts[res.get("pattern_name", graph_info.suggested_pattern_name)] += 1
             get_goal_counter(goal_graph_archive_counts, goal_key)[graph_info.graph_hash] += 1
             get_goal_counter(goal_family_hash_archive_counts, goal_key)[graph_info.family_hash] += 1
@@ -5037,6 +5661,21 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
             and res.get("backward_ok")
             and _has_completed_formal_epoch(res)
         )
+        save_gate_reason = "ok"
+        if should_save and backbone_signature and cnn_signature:
+            saved_best = saved_best_reward_target_by_backbone_cnn.get(backbone_cnn_pair_key)
+            if (
+                saved_backbone_cnn_pair_counts.get(backbone_cnn_pair_key, 0) > 0
+                and (
+                    reward_target_value is None
+                    or (
+                        saved_best is not None
+                        and float(reward_target_value) < float(saved_best) + SAVE_DUPLICATE_BACKBONE_CNN_DELTA
+                    )
+                )
+            ):
+                should_save = False
+                save_gate_reason = "duplicate_backbone_cnn_signature"
 
         if should_save:
             pattern_override = "" if graph_info.has_custom_pattern_name else res.get("suggested_pattern_name", "")
@@ -5057,8 +5696,30 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
             code_logger.log_to_file(f"[INFO] Saved successful code to B{B_index} (Signature: {sig})")
             saved_graph_counts[graph_info.graph_hash] += 1
             saved_family_hash_counts[graph_info.family_hash] += 1
+            if backbone_signature:
+                saved_backbone_signature_counts[backbone_signature] += 1
+            if cnn_signature:
+                saved_cnn_signature_counts[cnn_signature] += 1
+            if backbone_signature and cnn_signature:
+                saved_backbone_cnn_pair_counts[backbone_cnn_pair_key] += 1
+                saved_best_reward_target_by_backbone_cnn[backbone_cnn_pair_key] = max(
+                    float(saved_best_reward_target_by_backbone_cnn.get(backbone_cnn_pair_key, float("-inf"))),
+                    float(reward_target_value if reward_target_value is not None else float("-inf")),
+                )
             get_goal_counter(saved_goal_family_hash_counts, goal_key)[graph_info.family_hash] += 1
             B_index += 1
+        elif (
+            bool(graph_info)
+            and graph_info.parse_ok
+            and res.get("built_ok")
+            and res.get("forward_shape_ok")
+            and res.get("backward_ok")
+            and _has_completed_formal_epoch(res)
+        ):
+            code_logger.log_to_file(
+                f"[INFO] Skipped save for signature={sig} backbone={backbone_signature} cnn={cnn_signature} "
+                f"reason={save_gate_reason} reward_target={reward_target_value!r}"
+            )
 
         generation_total = _current_generation_total() + 1
         _record_generation_event(
@@ -5071,6 +5732,9 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
                 "family_hash": str(res.get("family_hash") or getattr(graph_info, "family_hash", "") or ""),
                 "graph_hash": str(res.get("graph_hash") or getattr(graph_info, "graph_hash", "") or ""),
                 "descriptor_key": str(res.get("descriptor_key") or getattr(graph_info, "descriptor_key", "") or ""),
+                "backbone_signature": backbone_signature,
+                "cnn_signature": cnn_signature,
+                "backbone_cnn_pair_key": backbone_cnn_pair_key,
                 "reward": score,
                 "reward_target_metric": str(res.get("reward_target_metric") or ""),
                 "reward_target_value": reward_target_value,
@@ -5092,6 +5756,12 @@ def _finalize_scored_results(scored_results: List[Dict[str, Any]]) -> None:
                 "executable_candidate": bool(res.get("executable_candidate", is_executable)),
                 "discovery_candidate": bool(res.get("discovery_candidate")),
                 "formal_success_candidate": bool(res.get("formal_success_candidate", is_trainable)),
+                "dominant_backbone_signature": dominant_backbone_signature,
+                "dominant_backbone_share": dominant_backbone_share,
+                "dominant_cnn_signature": dominant_cnn_signature,
+                "dominant_cnn_share": dominant_cnn_share,
+                "dominant_backbone_cnn_pair": dominant_backbone_cnn_pair,
+                "dominant_backbone_cnn_share": dominant_backbone_cnn_share,
             }
         )
 
@@ -5109,6 +5779,9 @@ def _print_discovery_metrics() -> None:
     unique_families = len(family_archive_counts)
     unique_skeletons = len(family_hash_archive_counts)
     unique_descriptors = len(descriptor_archive_counts)
+    unique_backbones = len(backbone_signature_archive_counts)
+    unique_cnns = len(cnn_signature_archive_counts)
+    unique_backbone_cnn_pairs = len(backbone_cnn_pair_archive_counts)
 
     if total_valid > 0:
         most_common_count = family_hash_archive_counts.most_common(1)[0][1]
@@ -5126,12 +5799,16 @@ def _print_discovery_metrics() -> None:
     print(
         f"\n[Discovery Metrics] Unique Graphs: {unique_count}, "
         f"Families: {unique_families}, Skeletons: {unique_skeletons}, Descriptors: {unique_descriptors}, "
+        f"Backbone Buckets: {unique_backbones}, CNN Signatures: {unique_cnns}, Backbone+CNN Pairs: {unique_backbone_cnn_pairs}, "
         f"Dominant Family Share: {dominant_share:.2%}, Entropy: {entropy:.2f}"
     )
     print(f"[Graph Archive] Top 5 Exact Graphs: {dict(graph_archive_counts.most_common(5))}")
     print(f"[Family Archive] Top 5 Family IDs: {dict(family_archive_counts.most_common(5))}")
     print(f"[Family Archive] Top 5 Skeletons: {dict(family_hash_archive_counts.most_common(5))}")
     print(f"[Descriptor Archive] Top 5: {dict(descriptor_archive_counts.most_common(5))}")
+    print(f"[Backbone Archive] Top 5: {dict(backbone_signature_archive_counts.most_common(5))}")
+    print(f"[CNN Archive] Top 5: {dict(cnn_signature_archive_counts.most_common(5))}")
+    print(f"[Backbone+CNN Archive] Top 5: {dict(backbone_cnn_pair_archive_counts.most_common(5))}")
     print(f"[Motif Names] Top 5: {dict(motif_name_counts.most_common(5))}")
     goal_summary = {
         goal_key: len(counter)

@@ -201,6 +201,7 @@ GROUP_IMPROVEMENT_DELTA = 0.003
 BEST_GROUP_REFRESH_DELTA = 0.0015
 GOAL_REFRESH_DELTA = 0.0015
 NON_IMPROVING_REWARD_CAP = 0.04
+FORMAL_REWARD_TRANSFORM = "norm_128_flip"
 BATCH_ELITE_SOFT_BONUSES = (0.10, 0.07, 0.05, 0.03, 0.02)
 BATCH_ELITE_IMPROVING_BONUSES = (0.18, 0.13, 0.09, 0.06, 0.04)
 STRUCTURE_MACRO_BONUS = 0.04
@@ -3856,7 +3857,7 @@ def base_discovery_reward_fn(
         'batch': 64,
         'dropout': 0.3,
         'momentum': 0.9,
-        'transform': 'norm_256_flip',
+        'transform': FORMAL_REWARD_TRANSFORM,
         'epoch': 1,
     }
     block_code, init_code, forward_code = extract_completion_blocks(completion)
@@ -4755,7 +4756,7 @@ def _build_batched_eval_specs(
                 "batch": 64,
                 "dropout": 0.3,
                 "momentum": 0.9,
-                "transform": "norm_256_flip",
+                "transform": FORMAL_REWARD_TRANSFORM,
                 "epoch": 1,
             },
             "device": "cuda" if torch.cuda.is_available() else "cpu",

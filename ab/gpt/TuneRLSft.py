@@ -40,7 +40,7 @@ SFT_DEEPSPEED_DEFAULT_CONFIG = str(conf_dir / "DeepSpeedSftGrpo.json")
 SFT_MODE_DEFAULT = "auto"
 
 # CIFAR-10 reward evaluation via nn-dataset / NNEval-aligned formal acc.
-SFT_EVAL_IMAGE_SIZE = 256
+SFT_EVAL_IMAGE_SIZE = 128
 SFT_EVAL_BATCH_SIZE = 64
 SFT_EVAL_TRAIN_SUBSET = 256
 SFT_EVAL_VAL_SUBSET = 128
@@ -72,6 +72,8 @@ import ab.gpt.TuneRL as TuneRL
 import ab.gpt.util.Reward as RewardUtil
 import ab.gpt.util.SFTUtil as SFTUtil
 import ab.gpt.util.training_runtime as TrainingRuntime
+
+SFT_EVAL_TRANSFORM = TuneRL.FORMAL_REWARD_TRANSFORM
 
 
 _TRAIN_GPU_TOKENS_ENV = "NNGPT_TRAIN_GPU_TOKENS"
@@ -1124,7 +1126,13 @@ def evaluate_code_and_reward_cifar(
         eval_device = "cuda" if torch.cuda.is_available() else "cpu"
         if prm is None:
             prm = {"lr": 1e-2, "momentum": 0.9, "dropout": 0.3}
-        defaults = {"lr": 1e-2, "momentum": 0.9, "batch": SFT_EVAL_BATCH_SIZE, "epoch": 1}
+        defaults = {
+            "lr": 1e-2,
+            "momentum": 0.9,
+            "batch": SFT_EVAL_BATCH_SIZE,
+            "epoch": 1,
+            "transform": SFT_EVAL_TRANSFORM,
+        }
         prm = {**defaults, **prm}
         cfg = build_sft_reward_eval_cfg(
             stage_name=stage_name,
@@ -1169,7 +1177,13 @@ def build_sft_reward_eval_cfg(
     eval_device = str(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     if prm is None:
         prm = {"lr": 1e-2, "momentum": 0.9, "dropout": 0.3}
-    defaults = {"lr": 1e-2, "momentum": 0.9, "batch": SFT_EVAL_BATCH_SIZE, "epoch": 1}
+    defaults = {
+        "lr": 1e-2,
+        "momentum": 0.9,
+        "batch": SFT_EVAL_BATCH_SIZE,
+        "epoch": 1,
+        "transform": SFT_EVAL_TRANSFORM,
+    }
     prm = {**defaults, **prm}
     effective_stage_name = str(stage_name or TuneRL.current_stage_name)
 
@@ -1856,7 +1870,7 @@ def main() -> None:
     print(f"[SFT RL] KL coef: {TuneRL.env_float('NNGPT_RL_KL_COEF', SFT_KL_COEF):.6f}")
     print(
         f"[SFT RL] Eval plan: stage1=static_only(no-check_nn), stage2/3=nn-dataset-formal(cifar-10), "
-        f"resize={SFT_EVAL_IMAGE_SIZE}, batch={SFT_EVAL_BATCH_SIZE}, "
+        f"transform={SFT_EVAL_TRANSFORM}, resize={SFT_EVAL_IMAGE_SIZE}, batch={SFT_EVAL_BATCH_SIZE}, "
         f"train_set=full, test_set=full, train_epochs={SFT_EVAL_TRAIN_EPOCHS}, "
         f"freeze_only_backbone_eval=True, formal_epoch_limit_minutes={SFT_EVAL_FORMAL_EPOCH_LIMIT_MINUTES}, "
         f"worker_eval_limit_seconds={SFT_EVAL_LIMIT_SECONDS}, "

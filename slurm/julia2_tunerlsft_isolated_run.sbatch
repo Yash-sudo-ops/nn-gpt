@@ -53,8 +53,8 @@ fi
 INSTALLED_AB_NN_DIR="$(
   python3 - <<'PY'
 from pathlib import Path
-import ab.nn
-print(Path(ab.nn.__file__).resolve().parent)
+import ab.nn.util
+print(Path(ab.nn.util.__file__).resolve().parent.parent)
 PY
 )"
 if [ ! -d "${INSTALLED_AB_NN_DIR}" ]; then

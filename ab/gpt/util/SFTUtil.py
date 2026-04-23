@@ -240,6 +240,9 @@ class Net(nn.Module):
             self.backbone_a.train()
             self.backbone_b.train()
         scaler = self._scaler
+        total_loss = 0.0
+        total_correct = 0
+        total_examples = 0
         train_iter = iter(train_data)
         try:
             for batch_idx, (inputs, labels) in enumerate(train_iter):
@@ -250,6 +253,10 @@ class Net(nn.Module):
                     outputs = self(inputs)
                     loss = self.criterion(outputs, labels)
                 if not torch.isfinite(loss): continue
+                batch_size = int(labels.size(0))
+                total_loss += float(loss.detach().item()) * batch_size
+                total_correct += int((outputs.detach().argmax(dim=1) == labels).sum().item())
+                total_examples += batch_size
                 if self.use_amp:
                     scaler.scale(loss).backward()
                     scaler.unscale_(self.optimizer)
@@ -264,6 +271,11 @@ class Net(nn.Module):
             if hasattr(train_iter, 'shutdown'): train_iter.shutdown()
             del train_iter
             gc.collect()
+        if total_examples == 0:
+            return 0.0, None
+        train_accuracy = total_correct / total_examples
+        train_loss = total_loss / total_examples
+        return train_accuracy, train_loss
 """
 
 prompt_template="""

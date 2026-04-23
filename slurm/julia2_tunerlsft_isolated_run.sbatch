@@ -28,6 +28,7 @@ WORK_DIR="${WORK_BASE}/nn-gpt"
 SLURM_DIR="${RUN_ROOT}/slurm"
 SOURCE_DIR="${REPO_ROOT}"
 NN_DATASET_ROOT="${NNGPT_NN_DATASET_ROOT:-/home/s471802/nn-dataset}"
+INSTALLED_AB_NN_DIR=""
 
 mkdir -p "${SLURM_DIR}" "${RUN_ROOT}/out"
 source /home/s471802/.venv/bin/activate
@@ -49,6 +50,19 @@ if [ ! -d "${NN_DATASET_ROOT}/ab/nn" ]; then
   exit 1
 fi
 
+INSTALLED_AB_NN_DIR="$(
+  python3 - <<'PY'
+from pathlib import Path
+import ab.nn
+print(Path(ab.nn.__file__).resolve().parent)
+PY
+)"
+if [ ! -d "${INSTALLED_AB_NN_DIR}" ]; then
+  echo "Installed ab.nn package not found: ${INSTALLED_AB_NN_DIR}" >&2
+  exit 1
+fi
+export NNGPT_INSTALLED_AB_NN_DIR="${INSTALLED_AB_NN_DIR}"
+
 rm -rf "${WORK_DIR}"
 mkdir -p "${WORK_BASE}"
 rsync -a \
@@ -64,10 +78,34 @@ rsync -a \
   "${SOURCE_DIR}/" "${WORK_DIR}/"
 
 mkdir -p "${WORK_DIR}/ab"
-rsync -a --delete \
-  --exclude '__pycache__' \
-  --exclude '*.pyc' \
-  "${NN_DATASET_ROOT}/ab/nn/" "${WORK_DIR}/ab/nn/"
+mkdir -p "${WORK_DIR}/ab/nn" "${WORK_DIR}/ab/nn/nn" "${WORK_DIR}/ab/nn/stat"
+cat > "${WORK_DIR}/ab/nn/__init__.py" <<'PY'
+import os
+from pkgutil import extend_path
+
+__path__ = extend_path(__path__, __name__)
+_installed_dir = os.environ.get("NNGPT_INSTALLED_AB_NN_DIR")
+if _installed_dir and os.path.isdir(_installed_dir) and _installed_dir not in __path__:
+    __path__.append(_installed_dir)
+PY
+cat > "${WORK_DIR}/ab/nn/nn/__init__.py" <<'PY'
+import os
+from pkgutil import extend_path
+
+__path__ = extend_path(__path__, __name__)
+_installed_dir = os.environ.get("NNGPT_INSTALLED_AB_NN_DIR")
+if _installed_dir:
+    _installed_nn_dir = os.path.join(_installed_dir, "nn")
+    if os.path.isdir(_installed_nn_dir) and _installed_nn_dir not in __path__:
+        __path__.append(_installed_nn_dir)
+PY
+cp "${NN_DATASET_ROOT}/ab/nn/api.py" "${WORK_DIR}/ab/nn/api.py"
+for subdir in util loader metric transform; do
+  rsync -a --delete \
+    --exclude '__pycache__' \
+    --exclude '*.pyc' \
+    "${NN_DATASET_ROOT}/ab/nn/${subdir}/" "${WORK_DIR}/ab/nn/${subdir}/"
+done
 
 rm -rf "${WORK_DIR}/out"
 ln -s "${RUN_ROOT}/out" "${WORK_DIR}/out"
@@ -148,6 +186,7 @@ echo "Resume source: ${resume_source}"
 echo "Master addr: ${MASTER_ADDR}"
 echo "Master port: ${MASTER_PORT}"
 echo "nn-dataset root: ${NN_DATASET_ROOT}"
+echo "nn-dataset installed package: ${INSTALLED_AB_NN_DIR}"
 
 cd "${WORK_DIR}"
 NN_DATASET_IMPORT_PATH="$(

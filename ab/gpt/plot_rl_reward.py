@@ -538,6 +538,44 @@ def _cycle_xticks(cycles: list[int], *, max_ticks: int = 20) -> list[int]:
     return sorted(set(int(cycle) for cycle in ticks))
 
 
+def _valid_float_values(*series: Iterable[float]) -> list[float]:
+    values: list[float] = []
+    for current_series in series:
+        for value in current_series:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isnan(parsed) and not math.isinf(parsed):
+                values.append(parsed)
+    return values
+
+
+def _unit_zoom_ylim(*series: Iterable[float], min_span: float = 0.08, pad_fraction: float = 0.12) -> tuple[float, float]:
+    values = _valid_float_values(*series)
+    if not values:
+        return 0.0, 1.0
+
+    lower = max(0.0, min(values))
+    upper = min(1.0, max(values))
+    center = (lower + upper) / 2.0
+    span = max(float(min_span), upper - lower)
+    padded_span = span * (1.0 + 2.0 * float(pad_fraction))
+    y_min = max(0.0, center - padded_span / 2.0)
+    y_max = min(1.0, center + padded_span / 2.0)
+
+    if y_max - y_min < min_span:
+        deficit = min_span - (y_max - y_min)
+        y_min = max(0.0, y_min - deficit / 2.0)
+        y_max = min(1.0, y_max + deficit / 2.0)
+        if y_max - y_min < min_span:
+            if y_min <= 0.0:
+                y_max = min(1.0, y_min + min_span)
+            elif y_max >= 1.0:
+                y_min = max(0.0, y_max - min_span)
+    return y_min, y_max
+
+
 def _stage_segments(data: RewardLogData) -> list[tuple[int, int, str]]:
     if not data.stage_name:
         return []
@@ -653,7 +691,13 @@ def _plot_dashboard(
         axes[1].set_title("Actual Accuracy")
         axes[1].set_ylabel("Accuracy")
     axes[1].set_xlabel("Sample")
-    axes[1].set_ylim(0, 1)
+    axes[1].set_ylim(
+        *_unit_zoom_ylim(
+            data.train_acc,
+            data.frozen_test_acc,
+            target_roll if show_target else data.unfrozen_test_acc,
+        )
+    )
     axes[1].grid(True, linestyle="--", alpha=0.35)
     axes[1].legend(loc="best", fontsize=8)
 
@@ -779,7 +823,25 @@ def _plot_dashboard(
         axes[3].set_title("Cycle Actual Metrics")
         axes[3].set_ylabel("Accuracy")
     axes[3].set_xlabel("Cycle (Group ID)")
-    axes[3].set_ylim(0, 1)
+    if show_target:
+        axes[3].set_ylim(
+            *_unit_zoom_ylim(
+                cycle_summary["avg"],
+                cycle_summary["median"],
+                cycle_summary["best"],
+                closed_target,
+            )
+        )
+    else:
+        axes[3].set_ylim(
+            *_unit_zoom_ylim(
+                cycle_summary["avg"],
+                cycle_summary["median"],
+                cycle_summary["best"],
+                closed_train,
+                closed_test,
+            )
+        )
     if cycle_axis:
         axes[3].set_xticks(_cycle_xticks(cycle_axis))
         axes[3].set_xlim(min(cycle_axis) - 0.5, max(cycle_axis) + 0.5)

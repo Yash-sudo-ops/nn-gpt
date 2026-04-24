@@ -1420,12 +1420,128 @@ def _ast_is_self_method_call(node: ast.Call, method_name: str) -> bool:
     return isinstance(owner, ast.Name) and str(getattr(owner, "id", "")) == "self"
 
 
+def _cpu_prevalidation_failure_result(
+    *,
+    reward: float,
+    error_message: str,
+    error_type: Optional[str],
+    error_context: Dict[str, Any],
+    seed_accuracy_baseline: Optional[float],
+    effective_cfg: "EvalConfig",
+    backbone_model_names: Optional[list[str]],
+) -> Dict[str, Any]:
+    result = _empty_eval_result(
+        reward=reward,
+        error=error_message,
+        seed_accuracy_baseline=seed_accuracy_baseline,
+        eval_limit_seconds=_effective_eval_limit_seconds(effective_cfg),
+        backbone_model_names=backbone_model_names,
+    )
+    _apply_error_trace(
+        result,
+        error_type=error_type,
+        error_stage="cpu_prevalidate",
+        error_context=error_context,
+        error_hint=_infer_error_hint(error_message=error_message, context=error_context),
+    )
+    result["frozen_eval"] = _nested_eval_payload(
+        result,
+        eval_mode="frozen",
+        backbone_frozen=True,
+    )
+    if bool(getattr(effective_cfg, "run_unfrozen_backbone_eval", False)):
+        result["unfrozen_eval"] = _nested_eval_payload(
+            result,
+            eval_mode="unfrozen",
+            backbone_frozen=False,
+        )
+    return result
+
+
+def _cpu_smoke_prevalidate_reward_code(
+    code: str,
+    *,
+    seed_accuracy_baseline: Optional[float],
+    effective_cfg: "EvalConfig",
+    backbone_model_names: Optional[list[str]],
+    prm: Optional[Dict[str, Any]],
+    code_trace: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    if not bool(getattr(effective_cfg, "formal_nn_eval", False)):
+        return None
+    if not _safe_bool_env("NNGPT_RL_CPU_SMOKE_PREVALIDATE", True):
+        return None
+
+    input_shape = tuple(getattr(effective_cfg, "input_shape", (1, 3, 32, 32)))
+    if len(input_shape) != 4:
+        return None
+    cpu_input_shape = (1, int(input_shape[1]), int(input_shape[2]), int(input_shape[3]))
+    safe_prm = {
+        "lr": 1e-2,
+        "momentum": 0.9,
+        "batch": max(1, min(2, int(getattr(effective_cfg, "default_batch_size", 2) or 2))),
+        "epoch": 1,
+        "transform": None,
+        **dict(prm or {}),
+    }
+    safe_prm["batch"] = max(1, min(2, int(safe_prm.get("batch", 2) or 2)))
+    safe_prm["epoch"] = 1
+
+    model = None
+    smoke_context = {
+        "code_trace": code_trace,
+        "cpu_smoke": True,
+        "cpu_smoke_input_shape": cpu_input_shape,
+    }
+    try:
+        builder = build_fn_from_code(
+            code,
+            cpu_input_shape,
+            (int(getattr(effective_cfg, "n_classes", 10)),),
+            safe_prm,
+            "cpu",
+        )
+        model = builder()
+        if not isinstance(model, nn.Module):
+            raise RuntimeError("Net did not instantiate as torch.nn.Module")
+        model.to("cpu")
+        train_setup = getattr(model, "train_setup", None)
+        if callable(train_setup):
+            train_setup(safe_prm)
+        forward_input = torch.randn(*cpu_input_shape, device="cpu")
+        with torch.no_grad():
+            output = model(forward_input)
+        smoke_context["cpu_smoke_output_shape"] = tuple(output.shape) if hasattr(output, "shape") else None
+    except Exception as exc:
+        error_type = type(exc).__name__
+        error_message = f"{error_type}: {exc}"
+        return _cpu_prevalidation_failure_result(
+            reward=-3.0,
+            error_message=error_message,
+            error_type=error_type,
+            error_context=smoke_context,
+            seed_accuracy_baseline=seed_accuracy_baseline,
+            effective_cfg=effective_cfg,
+            backbone_model_names=backbone_model_names,
+        )
+    finally:
+        if model is not None:
+            try:
+                model.to("cpu")
+            except Exception:
+                pass
+            del model
+        gc.collect()
+    return None
+
+
 def _cpu_prevalidate_reward_code(
     code: str,
     *,
     seed_accuracy_baseline: Optional[float],
     effective_cfg: "EvalConfig",
     backbone_model_names: Optional[list[str]] = None,
+    prm: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     text = str(code or "")
     code_trace = _formal_eval_code_trace(text)
@@ -1472,38 +1588,25 @@ def _cpu_prevalidate_reward_code(
             error_type = "AttributeError"
             error_message = "AttributeError: 'Net' object has no attribute '_input_spec'"
 
-    if error_message is None:
-        return None
-
-    result = _empty_eval_result(
-        reward=-1.0,
-        error=error_message,
-        seed_accuracy_baseline=seed_accuracy_baseline,
-        eval_limit_seconds=_effective_eval_limit_seconds(effective_cfg),
-        backbone_model_names=backbone_model_names,
-    )
-    _apply_error_trace(
-        result,
-        error_type=error_type,
-        error_stage="cpu_prevalidate",
-        error_context={"code_trace": code_trace},
-        error_hint=_infer_error_hint(
+    if error_message is not None:
+        return _cpu_prevalidation_failure_result(
+            reward=-1.0,
             error_message=error_message,
-            context={"code_trace": code_trace},
-        ),
-    )
-    result["frozen_eval"] = _nested_eval_payload(
-        result,
-        eval_mode="frozen",
-        backbone_frozen=True,
-    )
-    if bool(getattr(effective_cfg, "run_unfrozen_backbone_eval", False)):
-        result["unfrozen_eval"] = _nested_eval_payload(
-            result,
-            eval_mode="unfrozen",
-            backbone_frozen=False,
+            error_type=error_type,
+            error_context={"code_trace": code_trace},
+            seed_accuracy_baseline=seed_accuracy_baseline,
+            effective_cfg=effective_cfg,
+            backbone_model_names=backbone_model_names,
         )
-    return result
+
+    return _cpu_smoke_prevalidate_reward_code(
+        text,
+        seed_accuracy_baseline=seed_accuracy_baseline,
+        effective_cfg=effective_cfg,
+        backbone_model_names=backbone_model_names,
+        prm=prm,
+        code_trace=code_trace,
+    )
 
 
 def _infer_error_hint(
@@ -1860,6 +1963,7 @@ def _preview_eval_request(
         seed_accuracy_baseline=seed_accuracy_baseline,
         effective_cfg=effective_cfg,
         backbone_model_names=backbone_model_names,
+        prm=prm,
     )
     return {
         "requested_device": requested_device,

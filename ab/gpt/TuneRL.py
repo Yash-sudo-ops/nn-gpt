@@ -5403,21 +5403,24 @@ def _precompute_eval_results(
         f"rank={rank} "
         f"local_rank={local_rank} "
         f"reward_batch_index={group_context.get('reward_batch_index')} "
-        f"entries={len(batched_eval_specs)}"
+        f"entries={len(batched_eval_specs)} "
+        f"wall_time={started_at:.6f}"
     )
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     batched_eval_results = evaluate_code_and_reward_batch(batched_eval_specs)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    elapsed_seconds = max(0.0, time.time() - started_at)
+    ended_at = time.time()
+    elapsed_seconds = max(0.0, ended_at - started_at)
     print(
         "[Reward Precompute Local] end "
         f"rank={rank} "
         f"local_rank={local_rank} "
         f"reward_batch_index={group_context.get('reward_batch_index')} "
         f"entries={len(batched_eval_specs)} "
-        f"elapsed_seconds={elapsed_seconds:.2f}"
+        f"elapsed_seconds={elapsed_seconds:.2f} "
+        f"wall_time={ended_at:.6f}"
     )
     for entry, eval_result in zip(batched_eval_entries, batched_eval_results):
         entry["precomputed_eval_result"] = eval_result

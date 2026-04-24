@@ -29,9 +29,10 @@ SLURM_DIR="${RUN_ROOT}/slurm"
 SOURCE_DIR="${REPO_ROOT}"
 NN_DATASET_ROOT="${NNGPT_NN_DATASET_ROOT:-/home/s471802/nn-dataset}"
 FALLBACK_AB_NN_DIR="${NN_DATASET_ROOT}/ab/nn"
+PYTHON_VENV="${NNGPT_PYTHON_VENV:-/home/s471802/.venv}"
 
 mkdir -p "${SLURM_DIR}" "${RUN_ROOT}/out"
-source /home/s471802/.venv/bin/activate
+source "${PYTHON_VENV}/bin/activate"
 cd "${REPO_ROOT}"
 
 export PYTHONUNBUFFERED=1
@@ -173,8 +174,24 @@ echo "Resume mode: ${resume_mode}"
 echo "Resume source: ${resume_source}"
 echo "Master addr: ${MASTER_ADDR}"
 echo "Master port: ${MASTER_PORT}"
+echo "Python venv: ${PYTHON_VENV}"
 echo "nn-dataset root: ${NN_DATASET_ROOT}"
 echo "nn-dataset fallback package: ${FALLBACK_AB_NN_DIR}"
+
+if [ "${NNGPT_BENCH_GPU_MONITOR:-0}" != "0" ]; then
+  bench_gpu_monitor_interval="${NNGPT_BENCH_GPU_MONITOR_INTERVAL_SECONDS:-15}"
+  (
+    while true; do
+      bench_gpu_wall_time="$(date +%s.%N)"
+      bench_gpu_iso_time="$(date -Is)"
+      nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | while IFS= read -r bench_gpu_row; do
+        echo "[Bench GPU] wall_time=${bench_gpu_wall_time} iso_time=${bench_gpu_iso_time} ${bench_gpu_row}"
+      done
+      sleep "${bench_gpu_monitor_interval}"
+    done
+  ) &
+  echo "Bench GPU monitor pid: $! interval_seconds=${bench_gpu_monitor_interval}"
+fi
 
 cd "${WORK_DIR}"
 NN_DATASET_IMPORT_PATH="$(

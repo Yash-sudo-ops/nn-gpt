@@ -20,6 +20,8 @@ GPU_COUNT="4"
 MEMORY=""
 CPUS=""
 JOB_NAME=""
+PYTHON_VENV=""
+DEPENDENCY=""
 SEED_STAGE2_CHECKPOINT="${SEED_STAGE2_CHECKPOINT_DEFAULT}"
 ENV_OVERRIDES=()
 
@@ -43,6 +45,8 @@ Options:
   --mem SIZE                   可选内存，如 64G
   --cpus N                     可选 cpus-per-task
   --job-name NAME              可选 job name
+  --venv PATH                  可选 Python venv，默认由 sbatch 脚本使用 /home/s471802/.venv
+  --dependency SPEC            可选 sbatch 依赖，如 afterany:<jobid>
   --seed-stage2-checkpoint P   可选共享 stage2 checkpoint 路径
   --env NAME=VALUE             追加训练环境变量，可重复
   --help                       显示帮助
@@ -152,6 +156,14 @@ while [[ $# -gt 0 ]]; do
       JOB_NAME="$2"
       shift 2
       ;;
+    --venv)
+      PYTHON_VENV="$2"
+      shift 2
+      ;;
+    --dependency)
+      DEPENDENCY="$2"
+      shift 2
+      ;;
     --seed-stage2-checkpoint)
       SEED_STAGE2_CHECKPOINT="$2"
       shift 2
@@ -245,8 +257,20 @@ python3 "${REPO_ROOT}/scripts/julia2_run_archive.py" init \
   --stderr-path "${stderr_path/\%j/<jobid>}" \
   --seed-stage2-checkpoint "${SEED_STAGE2_CHECKPOINT}"
 
+export_vars=(
+  "ALL"
+  "NNGPT_RUN_ID=${RUN_ID}"
+  "NNGPT_RUN_ROOT=${RUN_ROOT}"
+  "NNGPT_RUN_DOC_PATH=${DOC_PATH}"
+  "NNGPT_SEED_STAGE2_CHECKPOINT=${SEED_STAGE2_CHECKPOINT}"
+)
+if [[ -n "${PYTHON_VENV}" ]]; then
+  export_vars+=("NNGPT_PYTHON_VENV=${PYTHON_VENV}")
+fi
+sbatch_export="$(IFS=,; printf '%s' "${export_vars[*]}")"
+
 sbatch_args=(
-  --export="ALL,NNGPT_RUN_ID=${RUN_ID},NNGPT_RUN_ROOT=${RUN_ROOT},NNGPT_RUN_DOC_PATH=${DOC_PATH},NNGPT_SEED_STAGE2_CHECKPOINT=${SEED_STAGE2_CHECKPOINT}"
+  --export="${sbatch_export}"
   --open-mode append
   --output "${stdout_path}"
   --error "${stderr_path}"
@@ -257,6 +281,9 @@ if [[ -n "${PARTITION}" ]]; then
 fi
 if [[ -n "${QOS}" ]]; then
   sbatch_args+=(--qos "${QOS}")
+fi
+if [[ -n "${DEPENDENCY}" ]]; then
+  sbatch_args+=(--dependency "${DEPENDENCY}")
 fi
 if [[ -n "${TIME_LIMIT}" ]]; then
   sbatch_args+=(--time "${TIME_LIMIT}")

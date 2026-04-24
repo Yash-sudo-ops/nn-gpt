@@ -1,5 +1,6 @@
 import ast
 import hashlib
+import json
 import os
 import shutil
 import random
@@ -639,6 +640,33 @@ def _env_int(name: str, default: int) -> int:
     return int(raw)
 
 
+def _env_optional_int(name: str) -> int | None:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return None
+    return int(raw)
+
+
+def _env_optional_json(name: str) -> Any | None:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return None
+    return json.loads(raw)
+
+
+def _set_optional_grpo_config(
+    config_kwargs: Dict[str, Any],
+    signature_parameters: Dict[str, inspect.Parameter],
+    name: str,
+    value: Any,
+) -> None:
+    if value is None:
+        return
+    if name not in signature_parameters:
+        raise RuntimeError(f"Installed GRPOConfig does not support `{name}`")
+    config_kwargs[name] = value
+
+
 def resolve_sft_init_adapter() -> str:
     return _env_str("NNGPT_SFT_INIT_ADAPTER", SFT_INIT_ADAPTER)
 
@@ -903,6 +931,9 @@ def resolve_sft_runtime_settings(runtime: Dict[str, Any]) -> Dict[str, int]:
         "effective_global_num_generations": generation_plan["effective_global_num_generations"],
         "global_num_generations_adapted": generation_plan["global_num_generations_adapted"],
         "valid_generation_values": generation_plan["valid_generation_values"],
+        "generation_batch_size": _env_optional_int("NNGPT_SFT_GENERATION_BATCH_SIZE"),
+        "steps_per_generation": _env_optional_int("NNGPT_SFT_STEPS_PER_GENERATION"),
+        "max_steps": _env_optional_int("NNGPT_SFT_MAX_STEPS"),
     }
 
 
@@ -1491,6 +1522,62 @@ def _build_sft_grpo_config(
         config_kwargs["save_steps"] = resolve_sft_save_steps()
     if "save_total_limit" in signature_parameters:
         config_kwargs["save_total_limit"] = resolve_sft_save_total_limit()
+    _set_optional_grpo_config(
+        config_kwargs,
+        signature_parameters,
+        "generation_batch_size",
+        runtime_settings.get("generation_batch_size"),
+    )
+    _set_optional_grpo_config(
+        config_kwargs,
+        signature_parameters,
+        "steps_per_generation",
+        runtime_settings.get("steps_per_generation"),
+    )
+    _set_optional_grpo_config(
+        config_kwargs,
+        signature_parameters,
+        "max_steps",
+        runtime_settings.get("max_steps"),
+    )
+    use_vllm = _env_flag("NNGPT_SFT_USE_VLLM", False)
+    if use_vllm:
+        _set_optional_grpo_config(
+            config_kwargs,
+            signature_parameters,
+            "use_vllm",
+            True,
+        )
+        _set_optional_grpo_config(
+            config_kwargs,
+            signature_parameters,
+            "vllm_mode",
+            _env_str("NNGPT_SFT_VLLM_MODE", "colocate"),
+        )
+        _set_optional_grpo_config(
+            config_kwargs,
+            signature_parameters,
+            "vllm_gpu_memory_utilization",
+            TuneRL.env_float("NNGPT_SFT_VLLM_GPU_MEMORY_UTILIZATION", 0.25),
+        )
+        _set_optional_grpo_config(
+            config_kwargs,
+            signature_parameters,
+            "vllm_tensor_parallel_size",
+            _env_int("NNGPT_SFT_VLLM_TENSOR_PARALLEL_SIZE", 1),
+        )
+        _set_optional_grpo_config(
+            config_kwargs,
+            signature_parameters,
+            "vllm_enable_sleep_mode",
+            _env_flag("NNGPT_SFT_VLLM_ENABLE_SLEEP_MODE", True),
+        )
+    _set_optional_grpo_config(
+        config_kwargs,
+        signature_parameters,
+        "generation_kwargs",
+        _env_optional_json("NNGPT_SFT_GENERATION_KWARGS_JSON"),
+    )
     explicit_kl_coef = TuneRL.env_float("NNGPT_RL_KL_COEF", SFT_KL_COEF)
     if "beta" in signature_parameters:
         config_kwargs["beta"] = explicit_kl_coef
@@ -1612,6 +1699,14 @@ def run_sft_training():
         f"requested_global_num_generations={runtime_settings['requested_global_num_generations']} "
         f"global_num_generations={runtime_settings['global_num_generations']} "
         f"effective_global_num_generations={runtime_settings['effective_global_num_generations']}"
+    )
+    print(
+        "[SFT RL] Generation tuning: "
+        f"max_steps={runtime_settings.get('max_steps')} "
+        f"generation_batch_size={runtime_settings.get('generation_batch_size')} "
+        f"steps_per_generation={runtime_settings.get('steps_per_generation')} "
+        f"use_vllm={_env_flag('NNGPT_SFT_USE_VLLM', False)} "
+        f"vllm_mode={_env_str('NNGPT_SFT_VLLM_MODE', 'colocate') if _env_flag('NNGPT_SFT_USE_VLLM', False) else None}"
     )
     if runtime_settings["global_num_generations_adapted"]:
         print(

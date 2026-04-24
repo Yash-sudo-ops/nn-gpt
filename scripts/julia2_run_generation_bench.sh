@@ -10,7 +10,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [[ -n "${NNGPT_REPO_ROOT:-}" ]]; then
+  REPO_ROOT="$(cd "${NNGPT_REPO_ROOT}" && pwd)"
+else
+  REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+  if [[ ! -d "${REPO_ROOT}/.git" && -d /home/s471802/nn-gpt/.git ]]; then
+    REPO_ROOT=/home/s471802/nn-gpt
+  fi
+fi
 BENCH_TS="$(date '+%Y%m%d_%H%M%S')"
 BENCH_ID="${NNGPT_GENBENCH_ID:-genbench_${BENCH_TS}}"
 BENCH_ROOT="${REPO_ROOT}/parallel_runs/${BENCH_ID}"

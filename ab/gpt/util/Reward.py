@@ -1493,7 +1493,13 @@ def _cpu_smoke_prevalidate_reward_code(
         "cpu_smoke": True,
         "cpu_smoke_input_shape": cpu_input_shape,
     }
+    original_cuda_is_available = getattr(torch.cuda, "is_available", None)
+    original_cuda_device_count = getattr(torch.cuda, "device_count", None)
     try:
+        if callable(original_cuda_is_available):
+            torch.cuda.is_available = lambda: False  # type: ignore[method-assign]
+        if callable(original_cuda_device_count):
+            torch.cuda.device_count = lambda: 0  # type: ignore[method-assign]
         builder = build_fn_from_code(
             code,
             cpu_input_shape,
@@ -1525,6 +1531,10 @@ def _cpu_smoke_prevalidate_reward_code(
             backbone_model_names=backbone_model_names,
         )
     finally:
+        if callable(original_cuda_is_available):
+            torch.cuda.is_available = original_cuda_is_available  # type: ignore[method-assign]
+        if callable(original_cuda_device_count):
+            torch.cuda.device_count = original_cuda_device_count  # type: ignore[method-assign]
         if model is not None:
             try:
                 model.to("cpu")

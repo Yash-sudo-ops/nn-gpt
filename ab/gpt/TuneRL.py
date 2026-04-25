@@ -337,10 +337,10 @@ STAGE23_DOMINANT_CNN_STRONG_SHARE = 0.65
 STAGE23_DOMINANT_CNN_REPEAT_PENALTY = -0.16
 STAGE23_DOMINANT_CNN_REPEAT_STRONG_PENALTY = -0.24
 STAGE23_STRUCTURE_ARCHIVE_RARITY_CAP = 0.03
-STAGE2_DENSE_SCALE = 0.75
+STAGE2_DENSE_SCALE = 0.50
 STAGE2_PREV_GROUP_SCALE = 0.70
 STAGE2_BEST_GROUP_SCALE = 0.70
-STAGE2_GLOBAL_BASELINE_BLEND = 0.35
+STAGE2_GLOBAL_BASELINE_BLEND = 0.20
 STAGE2_BACKBONE_PREV_GROUP_SCALE = 0.95
 STAGE2_BACKBONE_BEST_GROUP_SCALE = 0.95
 STAGE2_GOAL_BEST_SCALE = 0.70
@@ -351,10 +351,10 @@ STAGE2_PLAIN_FUSE_SCALE = 1.10
 STAGE2_NO_PROGRESS_SCALE = 0.50
 STAGE2_NON_IMPROVING_CAP = 0.10
 STAGE2_DESCRIPTOR_NON_IMPROVING_CAP = 0.03
-STAGE3_DENSE_SCALE = 1.20
+STAGE3_DENSE_SCALE = 0.70
 STAGE3_PREV_GROUP_SCALE = 1.10
 STAGE3_BEST_GROUP_SCALE = 1.10
-STAGE3_GLOBAL_BASELINE_BLEND = 0.45
+STAGE3_GLOBAL_BASELINE_BLEND = 0.25
 STAGE3_BACKBONE_PREV_GROUP_SCALE = 1.20
 STAGE3_BACKBONE_BEST_GROUP_SCALE = 1.15
 STAGE3_GOAL_BEST_SCALE = 1.00
@@ -4427,6 +4427,8 @@ def base_discovery_reward_fn(
     beat_best_target = False
     beat_prev_backbone_target = False
     beat_best_backbone_target = False
+    quality_diversity_eligible = False
+    formal_progress_refresh = False
     backbone_reward_target_gain = None
     backbone_reward_target_improved = False
 
@@ -4626,6 +4628,7 @@ def base_discovery_reward_fn(
         if has_formal_epoch and reward_target_value is not None:
             train_acc_value = float(train_acc or 0.0)
             reward_target_float = float(reward_target_value)
+            quality_diversity_eligible = bool(formal_success_candidate)
             r_dense = stage_profile["dense_scale"] * _clip(
                 0.03 + 0.20 * reward_target_float + 0.04 * max(0.0, train_acc_value - 0.50),
                 0.02,
@@ -4707,15 +4710,21 @@ def base_discovery_reward_fn(
                     0.0,
                 )
 
-        descriptor_progress_refresh = bool(
-            beat_prev_target
-            or beat_best_target
-            or beat_prev_backbone_target
-            or beat_best_backbone_target
-            or r_goal_best > 0.0
-        )
+        if backbone_prev_target_reward_target_acc is not None or backbone_best_target_reward_target_acc is not None:
+            formal_progress_refresh = bool(
+                beat_prev_backbone_target
+                or beat_best_backbone_target
+                or r_goal_best > 0.0
+            )
+        else:
+            formal_progress_refresh = bool(
+                beat_prev_target
+                or beat_best_target
+                or r_goal_best > 0.0
+            )
+        descriptor_progress_refresh = formal_progress_refresh
         if executable_candidate and graph_info.parse_ok and graph_info.descriptor_key:
-            if batch_same_descriptor_count == 1:
+            if quality_diversity_eligible and batch_same_descriptor_count == 1:
                 r_descriptor_diversity += STAGE23_DESCRIPTOR_BATCH_UNIQUE_BONUS
             elif batch_same_descriptor_count > 1:
                 r_descriptor_diversity += max(
@@ -4723,7 +4732,7 @@ def base_discovery_reward_fn(
                     STAGE23_DESCRIPTOR_BATCH_REPEAT_STEP_PENALTY * float(batch_same_descriptor_count - 1),
                 )
 
-            if archive_snapshot_descriptor_freq <= 0:
+            if quality_diversity_eligible and archive_snapshot_descriptor_freq <= 0:
                 r_descriptor_diversity += STAGE23_DESCRIPTOR_ARCHIVE_NOVEL_BONUS
             elif archive_snapshot_descriptor_freq > 1:
                 r_descriptor_diversity += max(
@@ -4733,6 +4742,7 @@ def base_discovery_reward_fn(
 
             if (
                 (not group_warmup)
+                and quality_diversity_eligible
                 and dominant_descriptor_key
                 and graph_info.descriptor_key != dominant_descriptor_key
                 and float(dominant_descriptor_share or 0.0) >= STAGE23_DOMINANT_DESCRIPTOR_SOFT_SHARE
@@ -4752,7 +4762,7 @@ def base_discovery_reward_fn(
                     r_descriptor_diversity += STAGE23_DOMINANT_DESCRIPTOR_REPEAT_PENALTY
 
         if executable_candidate and graph_info.parse_ok and cnn_signature:
-            if batch_same_backbone_cnn_count == 1:
+            if quality_diversity_eligible and batch_same_backbone_cnn_count == 1:
                 r_cnn_diversity += STAGE23_CNN_BATCH_UNIQUE_BONUS
             elif batch_same_backbone_cnn_count > 1:
                 r_cnn_diversity += max(
@@ -4760,7 +4770,7 @@ def base_discovery_reward_fn(
                     STAGE23_CNN_BATCH_REPEAT_STEP_PENALTY * float(batch_same_backbone_cnn_count - 1),
                 )
 
-            if archive_snapshot_backbone_cnn_freq <= 0:
+            if quality_diversity_eligible and archive_snapshot_backbone_cnn_freq <= 0:
                 r_cnn_diversity += STAGE23_CNN_ARCHIVE_NOVEL_BONUS
             elif archive_snapshot_backbone_cnn_freq > 1:
                 r_cnn_diversity += max(
@@ -4770,6 +4780,7 @@ def base_discovery_reward_fn(
 
             if (
                 (not group_warmup)
+                and quality_diversity_eligible
                 and archive_snapshot_backbone_freq >= BACKBONE_BASELINE_MIN_ARCHIVE_SAMPLES
                 and dominant_backbone_cnn_signature
                 and cnn_signature != dominant_backbone_cnn_signature

@@ -70,6 +70,7 @@ submit_case() {
     --run-id "${run_id}"
     --run-label "${name}"
     --run-note "generation bench ${name}"
+    --no-run-archive
     --commit-hash "${commit_hash}"
     --commit-subject "${commit_subject}"
     --partition "${PARTITION}"

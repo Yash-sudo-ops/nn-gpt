@@ -24,6 +24,7 @@ PYTHON_VENV=""
 DEPENDENCY=""
 SEED_STAGE2_CHECKPOINT="${SEED_STAGE2_CHECKPOINT_DEFAULT}"
 ENV_OVERRIDES=()
+ARCHIVE_MODE="auto"
 
 usage() {
   cat <<'EOF'
@@ -49,6 +50,8 @@ Options:
   --dependency SPEC            可选 sbatch 依赖，如 afterany:<jobid>
   --seed-stage2-checkpoint P   可选共享 stage2 checkpoint 路径
   --env NAME=VALUE             追加训练环境变量，可重复
+  --no-run-archive             不写 run_archive_index.md，用于 smoke/test/benchmark
+  --archive-run                强制写 run_archive_index.md
   --help                       显示帮助
 
 Examples:
@@ -96,6 +99,13 @@ generate_run_id() {
     suffix=$((suffix + 1))
   done
   printf '%s\n' "${candidate}"
+}
+
+is_test_archive_run() {
+  local raw slug
+  raw="${RUN_ID} ${RUN_LABEL} ${RUN_NOTE} ${JOB_NAME}"
+  slug="$(slugify "${raw}")"
+  [[ "${slug}" =~ (^|_)(smoke|test|bench|benchmark|genbench|speed_test|speed_smoke|tmp|temporary)($|_) ]]
 }
 
 while [[ $# -gt 0 ]]; do
@@ -172,6 +182,14 @@ while [[ $# -gt 0 ]]; do
       ENV_OVERRIDES+=("$2")
       shift 2
       ;;
+    --no-run-archive)
+      ARCHIVE_MODE="never"
+      shift
+      ;;
+    --archive-run)
+      ARCHIVE_MODE="always"
+      shift
+      ;;
     --help)
       usage
       exit 0
@@ -196,6 +214,13 @@ if [[ -z "${RUN_ID}" ]]; then
 fi
 if [[ -z "${FINALIZE_QOS}" ]]; then
   FINALIZE_QOS="${QOS}"
+fi
+
+ARCHIVE_RUN=1
+if [[ "${ARCHIVE_MODE}" == "never" ]]; then
+  ARCHIVE_RUN=0
+elif [[ "${ARCHIVE_MODE}" == "auto" ]] && is_test_archive_run; then
+  ARCHIVE_RUN=0
 fi
 
 RUN_ROOT="${REPO_ROOT}/parallel_runs/${RUN_ID}"
@@ -241,29 +266,37 @@ chmod 700 "${RUN_ENV_FILE}"
 stdout_path="${SLURM_DIR}/${JOB_NAME:-tunerl-${RUN_LABEL_SLUG}}-%j.out"
 stderr_path="${SLURM_DIR}/${JOB_NAME:-tunerl-${RUN_LABEL_SLUG}}-%j.err"
 
-python3 "${REPO_ROOT}/scripts/julia2_run_archive.py" init \
-  --run-root "${RUN_ROOT}" \
-  --doc-path "${DOC_PATH}" \
-  --run-id "${RUN_ID}" \
-  --run-label "${RUN_LABEL}" \
-  --run-note "${RUN_NOTE}" \
-  --commit-hash "${COMMIT_HASH}" \
-  --commit-subject "${COMMIT_SUBJECT}" \
-  --submit-time "${submit_time}" \
-  --status "已提交" \
-  --partition "${PARTITION}" \
-  --qos "${QOS:-}" \
-  --stdout-path "${stdout_path/\%j/<jobid>}" \
-  --stderr-path "${stderr_path/\%j/<jobid>}" \
-  --seed-stage2-checkpoint "${SEED_STAGE2_CHECKPOINT}"
+if [[ "${ARCHIVE_RUN}" == "1" ]]; then
+  python3 "${REPO_ROOT}/scripts/julia2_run_archive.py" init \
+    --run-root "${RUN_ROOT}" \
+    --doc-path "${DOC_PATH}" \
+    --run-id "${RUN_ID}" \
+    --run-label "${RUN_LABEL}" \
+    --run-note "${RUN_NOTE}" \
+    --commit-hash "${COMMIT_HASH}" \
+    --commit-subject "${COMMIT_SUBJECT}" \
+    --submit-time "${submit_time}" \
+    --status "已提交" \
+    --partition "${PARTITION}" \
+    --qos "${QOS:-}" \
+    --stdout-path "${stdout_path/\%j/<jobid>}" \
+    --stderr-path "${stderr_path/\%j/<jobid>}" \
+    --seed-stage2-checkpoint "${SEED_STAGE2_CHECKPOINT}"
+else
+  echo "Run archive: skipped for test/benchmark run ${RUN_ID}" >&2
+fi
 
 export_vars=(
   "ALL"
   "NNGPT_RUN_ID=${RUN_ID}"
   "NNGPT_RUN_ROOT=${RUN_ROOT}"
-  "NNGPT_RUN_DOC_PATH=${DOC_PATH}"
   "NNGPT_SEED_STAGE2_CHECKPOINT=${SEED_STAGE2_CHECKPOINT}"
 )
+if [[ "${ARCHIVE_RUN}" == "1" ]]; then
+  export_vars+=("NNGPT_RUN_DOC_PATH=${DOC_PATH}")
+else
+  export_vars+=("NNGPT_SKIP_RUN_ARCHIVE=1")
+fi
 if [[ -n "${PYTHON_VENV}" ]]; then
   export_vars+=("NNGPT_PYTHON_VENV=${PYTHON_VENV}")
 fi
@@ -313,38 +346,46 @@ fi
 resolved_stdout_path="${stdout_path/\%j/${main_job_id}}"
 resolved_stderr_path="${stderr_path/\%j/${main_job_id}}"
 
-python3 "${REPO_ROOT}/scripts/julia2_run_archive.py" update \
-  --run-root "${RUN_ROOT}" \
-  --doc-path "${DOC_PATH}" \
-  --mode manual \
-  --job-id "${main_job_id}" \
-  --status "已提交" \
-  --partition "${PARTITION}" \
-  --qos "${QOS:-}" \
-  --stdout-path "${resolved_stdout_path}" \
-  --stderr-path "${resolved_stderr_path}"
+if [[ "${ARCHIVE_RUN}" == "1" ]]; then
+  python3 "${REPO_ROOT}/scripts/julia2_run_archive.py" update \
+    --run-root "${RUN_ROOT}" \
+    --doc-path "${DOC_PATH}" \
+    --mode manual \
+    --job-id "${main_job_id}" \
+    --status "已提交" \
+    --partition "${PARTITION}" \
+    --qos "${QOS:-}" \
+    --stdout-path "${resolved_stdout_path}" \
+    --stderr-path "${resolved_stderr_path}"
 
-finalize_submit_output="$(
-  {
-    finalize_args=(
-      --dependency "afterany:${main_job_id}"
-      -p "${FINALIZE_PARTITION}"
-      --open-mode append
-      --job-name "tunerl-finalize-${RUN_LABEL_SLUG}"
-      --output "${SLURM_DIR}/tunerl-finalize-${RUN_LABEL_SLUG}-${main_job_id}.out"
-      --error "${SLURM_DIR}/tunerl-finalize-${RUN_LABEL_SLUG}-${main_job_id}.err"
-      --export "ALL,NNGPT_RUN_ROOT=${RUN_ROOT},NNGPT_RUN_DOC_PATH=${DOC_PATH},NNGPT_MAIN_JOB_ID=${main_job_id}"
-    )
-    if [[ -n "${FINALIZE_QOS}" ]]; then
-      finalize_args+=(--qos "${FINALIZE_QOS}")
-    fi
-    sbatch "${finalize_args[@]}" "${FINALIZE_SCRIPT}"
-  }
-)"
-finalize_job_id="$(printf '%s\n' "${finalize_submit_output}" | awk '/Submitted batch job/ {print $4}' | tail -n 1)"
+  finalize_submit_output="$(
+    {
+      finalize_args=(
+        --dependency "afterany:${main_job_id}"
+        -p "${FINALIZE_PARTITION}"
+        --open-mode append
+        --job-name "tunerl-finalize-${RUN_LABEL_SLUG}"
+        --output "${SLURM_DIR}/tunerl-finalize-${RUN_LABEL_SLUG}-${main_job_id}.out"
+        --error "${SLURM_DIR}/tunerl-finalize-${RUN_LABEL_SLUG}-${main_job_id}.err"
+        --export "ALL,NNGPT_RUN_ROOT=${RUN_ROOT},NNGPT_RUN_DOC_PATH=${DOC_PATH},NNGPT_MAIN_JOB_ID=${main_job_id}"
+      )
+      if [[ -n "${FINALIZE_QOS}" ]]; then
+        finalize_args+=(--qos "${FINALIZE_QOS}")
+      fi
+      sbatch "${finalize_args[@]}" "${FINALIZE_SCRIPT}"
+    }
+  )"
+  finalize_job_id="$(printf '%s\n' "${finalize_submit_output}" | awk '/Submitted batch job/ {print $4}' | tail -n 1)"
+else
+  finalize_job_id="skipped"
+fi
 
 printf 'run_id=%s\n' "${RUN_ID}"
 printf 'main_job_id=%s\n' "${main_job_id}"
 printf 'finalize_job_id=%s\n' "${finalize_job_id:-unknown}"
 printf 'run_root=%s\n' "${RUN_ROOT}"
-printf 'doc_path=%s\n' "${DOC_PATH}"
+if [[ "${ARCHIVE_RUN}" == "1" ]]; then
+  printf 'doc_path=%s\n' "${DOC_PATH}"
+else
+  printf 'doc_path=skipped\n'
+fi

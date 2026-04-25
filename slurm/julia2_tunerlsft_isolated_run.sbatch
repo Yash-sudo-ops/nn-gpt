@@ -16,12 +16,17 @@ set -euo pipefail
 
 : "${NNGPT_RUN_ID:?Set NNGPT_RUN_ID before sbatch.}"
 : "${NNGPT_RUN_ROOT:?Set NNGPT_RUN_ROOT before sbatch.}"
-: "${NNGPT_RUN_DOC_PATH:?Set NNGPT_RUN_DOC_PATH before sbatch.}"
 : "${NNGPT_SEED_STAGE2_CHECKPOINT:?Set NNGPT_SEED_STAGE2_CHECKPOINT before sbatch.}"
 
 REPO_ROOT="/home/s471802/nn-gpt"
 RUN_ROOT="$(python3 -c 'from pathlib import Path; import os; print(Path(os.environ["NNGPT_RUN_ROOT"]).expanduser().resolve())')"
-DOC_PATH="$(python3 -c 'from pathlib import Path; import os; print(Path(os.environ["NNGPT_RUN_DOC_PATH"]).expanduser().resolve())')"
+SKIP_RUN_ARCHIVE="${NNGPT_SKIP_RUN_ARCHIVE:-0}"
+if [ "${SKIP_RUN_ARCHIVE}" != "1" ]; then
+  : "${NNGPT_RUN_DOC_PATH:?Set NNGPT_RUN_DOC_PATH before sbatch.}"
+  DOC_PATH="$(python3 -c 'from pathlib import Path; import os; print(Path(os.environ["NNGPT_RUN_DOC_PATH"]).expanduser().resolve())')"
+else
+  DOC_PATH=""
+fi
 RUN_ENV_FILE="${RUN_ROOT}/run_env.sh"
 WORK_BASE="/tmp/${USER}/${NNGPT_RUN_ID}"
 WORK_DIR="${WORK_BASE}/nn-gpt"
@@ -151,18 +156,22 @@ else
   resume_source="共享 seed stage2 checkpoint: ${NNGPT_SFT_RESUME_STAGE_CHECKPOINT}"
 fi
 
-python3 "${REPO_ROOT}/scripts/julia2_run_archive.py" update \
-  --run-root "${RUN_ROOT}" \
-  --doc-path "${DOC_PATH}" \
-  --mode start \
-  --status "运行中" \
-  --job-id "${SLURM_JOB_ID:-}" \
-  --node "${SLURMD_NODENAME:-${SLURM_JOB_NODELIST:-}}" \
-  --start-time "$(date -Is)" \
-  --stdout-path "${SLURM_DIR}/${SLURM_JOB_NAME:-job}-${SLURM_JOB_ID:-0}.out" \
-  --stderr-path "${SLURM_DIR}/${SLURM_JOB_NAME:-job}-${SLURM_JOB_ID:-0}.err" \
-  --work-dir "${WORK_DIR}" \
-  --initial-resume-source "${resume_source}"
+if [ "${SKIP_RUN_ARCHIVE}" != "1" ]; then
+  python3 "${REPO_ROOT}/scripts/julia2_run_archive.py" update \
+    --run-root "${RUN_ROOT}" \
+    --doc-path "${DOC_PATH}" \
+    --mode start \
+    --status "运行中" \
+    --job-id "${SLURM_JOB_ID:-}" \
+    --node "${SLURMD_NODENAME:-${SLURM_JOB_NODELIST:-}}" \
+    --start-time "$(date -Is)" \
+    --stdout-path "${SLURM_DIR}/${SLURM_JOB_NAME:-job}-${SLURM_JOB_ID:-0}.out" \
+    --stderr-path "${SLURM_DIR}/${SLURM_JOB_NAME:-job}-${SLURM_JOB_ID:-0}.err" \
+    --work-dir "${WORK_DIR}" \
+    --initial-resume-source "${resume_source}"
+else
+  echo "Run archive: skipped for ${NNGPT_RUN_ID}"
+fi
 
 echo "Run ID: ${NNGPT_RUN_ID}"
 echo "Run root: ${RUN_ROOT}"

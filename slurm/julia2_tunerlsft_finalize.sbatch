@@ -13,6 +13,10 @@
 set -euo pipefail
 
 : "${NNGPT_RUN_ROOT:?Set NNGPT_RUN_ROOT before sbatch.}"
+if [ "${NNGPT_SKIP_RUN_ARCHIVE:-0}" = "1" ]; then
+  echo "Run archive: skipped finalize"
+  exit 0
+fi
 : "${NNGPT_RUN_DOC_PATH:?Set NNGPT_RUN_DOC_PATH before sbatch.}"
 
 REPO_ROOT="/home/s471802/nn-gpt"

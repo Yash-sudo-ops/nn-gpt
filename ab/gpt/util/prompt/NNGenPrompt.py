@@ -7,6 +7,7 @@ from pandas import DataFrame
 from transformers import PreTrainedTokenizerBase
 
 from ab.gpt.util.prompt.Prompt import Prompt
+from ab.gpt.util.lemur_enrichment import patch_join_nn_query, enrich_dataframe
 from tqdm import tqdm
 
 from ab.nn.util.db.Query import JoinConf
@@ -51,6 +52,12 @@ class NNGenPrompt(Prompt):
             # For JOIN queries, cap rows to avoid O(n²) scan on the temp table.
             # Slice to n_training_prompts after the fact instead of relying on LIMIT inside the JOIN.
             join_cap = 1000
+
+            # Patch LEMUR's join query before the data call so that the key dataset_2
+            # and its siblings appear in the result set.
+            if use_join:
+                patch_join_nn_query()
+
             data = lemur.data(
                 only_best_accuracy=only_best_accuracy,
                 task=key_dict.get('task'),
@@ -63,6 +70,11 @@ class NNGenPrompt(Prompt):
                     enhance_nn=key_dict.get('improve', False)
                 )
             )
+
+            # For the classification tasks,  enrich the DataFrame with normalised
+            # accuracy and dataset-metadata columns needed for the prompt 
+            if key_dict.get('output_type') == 'classification':
+                enrich_dataframe(data)
 
             print('Data acquisition complete', flush=True)
 

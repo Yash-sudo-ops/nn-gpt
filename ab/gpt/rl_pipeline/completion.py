@@ -7,9 +7,6 @@ import re
 import textwrap
 from typing import Dict, List, Sequence, Tuple
 
-from ab.gpt.TuneRL import clean_block
-
-
 REQUIRED_BACKBONE_NAMES = ("backbone_a", "backbone_b")
 BLOCK_SIGNATURE = "def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):"
 INIT_SIGNATURE = "def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:"
@@ -45,9 +42,18 @@ def _strip_outer_code_fences(text: str) -> str:
     return text.strip()
 
 
+def _clean_block(text: str) -> str:
+    if not text:
+        return ""
+    text = text.strip()
+    text = re.sub(r"^```python\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
 def _extract_xml_tag(text: str, tag: str) -> str:
     match = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", text, re.IGNORECASE | re.DOTALL)
-    return clean_block(match.group(1)) if match else ""
+    return _clean_block(match.group(1)) if match else ""
 
 
 def _dedupe_keep_order(items: Sequence[str]) -> List[str]:

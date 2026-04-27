@@ -86,14 +86,6 @@ _TRAIN_GPU_TOKENS_ENV = "NNGPT_TRAIN_GPU_TOKENS"
 _AUX_GPU_TOKENS_ENV = "NNGPT_AUX_GPU_TOKENS"
 _REWARD_GPU_TOKENS_ENV = "NNGPT_REWARD_GPU_TOKENS"
 
-class RawCodeLogger(TuneRL.SimpleCodeLogger):
-    def __init__(self, output_dir: str = "rl_output/raw"):
-        super().__init__(output_dir)
-        self.samples_file = os.path.join(output_dir, "generation_samples.jsonl")
-
-    def log_generation(self, prompt: str, completion: str, reward: float, api_result=None):
-        super().log_generation(prompt, completion, reward, api_result)
-
 def raw_reward_fn(
     completion: str,
     *,
@@ -1436,15 +1428,13 @@ def run_sft_training():
 
     TrainerRuntime.enable_non_reentrant_gradient_checkpointing(
         model,
-        precision=precision,
         log_prefix="[SFT RL]",
     )
     model.print_trainable_parameters()
     TuneRL.active_rl_model = model
     TuneRL.active_rl_tokenizer = tokenizer
 
-    trainer = TrainerRuntime.build_grpo_trainer(
-        trainer_cls=TuneRL.GRPOTrainer,
+    trainer = TuneRL.GRPOTrainer(
         model=model,
         train_dataset=rl_dataset,
         reward_funcs=TuneRL.compute_reward,
@@ -1559,7 +1549,7 @@ def bootstrap_sft_runtime() -> None:
             shutil.rmtree(TuneRL.run_epoch_dir(), ignore_errors=True)
             print(f"Cleaning existing trainer outputs in {trainer_out_dir}...")
             shutil.rmtree(trainer_out_dir, ignore_errors=True)
-        TuneRL.code_logger = RawCodeLogger(log_dir)
+        TuneRL.code_logger = TuneRL.SimpleCodeLogger(log_dir)
         sentinel_path.write_text(str(os.getpid()), encoding="utf-8")
         return
 

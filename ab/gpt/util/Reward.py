@@ -17,6 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import torch
+import ab.gpt.rl_pipeline.reward_payload as RewardPayload
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
@@ -1669,63 +1670,12 @@ def _base_eval_result(
     eval_limit_seconds: Optional[int] = None,
     backbone_model_names: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
-    return {
-        "val_metric": None,
-        "test_acc": None,
-        "built_ok": False,
-        "forward_ok": False,
-        "forward_shape_ok": False,
-        "trained_step_ok": False,
-        "backward_ok": False,
-        "loss_start": None,
-        "loss_end": None,
-        "loss_drop": None,
-        "loss_drop_ok": False,
-        "best_epoch_loss": None,
-        "avg_epoch_loss": None,
-        "epochs_completed": 0,
-        "epoch_loss_series": [],
-        "training_context_metric_name": "best_epoch_loss",
-        "training_context_metric_value": None,
-        "train_acc": None,
-        "seed_accuracy_baseline": seed_accuracy_baseline,
-        "seed_train_acc_gap": None,
-        "seed_train_acc_improved": False,
-        "accuracy_baseline": seed_accuracy_baseline,
-        "train_acc_gain": None,
-        "train_acc_improved": False,
-        "group_baseline_train_acc": None,
-        "group_train_acc_gain": None,
-        "group_train_acc_improved": False,
-        "reward_batch_index": None,
-        "reward_group_id": None,
-        "group_warmup": False,
-        "latency_ms": None,
-        "params_m": None,
-        "timed_out": False,
-        "estimated_total_seconds": None,
-        "eval_limit_seconds": eval_limit_seconds,
-        "warmup_dense_reward": None,
-        "backbone_model_names": list(backbone_model_names or []),
-        "frozen_train_acc": None,
-        "frozen_test_acc": None,
-        "unfrozen_train_acc": None,
-        "unfrozen_test_acc": None,
-        "frozen_eval": None,
-        "unfrozen_eval": None,
-        "reward_target_metric": "frozen_test_acc",
-        "reward_target_value": None,
-        "formal_reward_epochs": list(DEFAULT_FORMAL_REWARD_EPOCHS),
-        "formal_reward_max_epoch": int(max(DEFAULT_FORMAL_REWARD_EPOCHS)),
-        "formal_horizon_test_acc": {},
-        "formal_horizon_train_acc": {},
-        "formal_horizon_scores": {},
-        "formal_reward_target_value": None,
-        "error_type": None,
-        "error_stage": None,
-        "error_context": None,
-        "error_hint": None,
-    }
+    return RewardPayload.base_eval_result(
+        seed_accuracy_baseline=seed_accuracy_baseline,
+        eval_limit_seconds=eval_limit_seconds,
+        backbone_model_names=backbone_model_names,
+        formal_reward_epochs=DEFAULT_FORMAL_REWARD_EPOCHS,
+    )
 
 
 def _nested_eval_payload(
@@ -1734,52 +1684,11 @@ def _nested_eval_payload(
     eval_mode: str,
     backbone_frozen: bool,
 ) -> Optional[Dict[str, Any]]:
-    if result is None:
-        return None
-    return {
-        "eval_mode": eval_mode,
-        "backbone_frozen": backbone_frozen,
-        "reward": result.get("reward"),
-        "components": dict(result.get("components") or {}),
-        "built_ok": result.get("built_ok"),
-        "forward_ok": result.get("forward_ok"),
-        "forward_shape_ok": result.get("forward_shape_ok"),
-        "trained_step_ok": result.get("trained_step_ok"),
-        "backward_ok": result.get("backward_ok"),
-        "loss_start": result.get("loss_start"),
-        "loss_end": result.get("loss_end"),
-        "loss_drop": result.get("loss_drop"),
-        "loss_drop_ok": result.get("loss_drop_ok"),
-        "best_epoch_loss": result.get("best_epoch_loss"),
-        "avg_epoch_loss": result.get("avg_epoch_loss"),
-        "epochs_completed": result.get("epochs_completed"),
-        "epoch_loss_series": list(result.get("epoch_loss_series") or []),
-        "training_context_metric_name": result.get("training_context_metric_name"),
-        "training_context_metric_value": result.get("training_context_metric_value"),
-        "train_acc": result.get("train_acc"),
-        "test_acc": result.get("test_acc", result.get("val_metric")),
-        "val_metric": result.get("val_metric"),
-        "latency_ms": result.get("latency_ms"),
-        "params_m": result.get("params_m"),
-        "timed_out": result.get("timed_out", False),
-        "estimated_total_seconds": result.get("estimated_total_seconds"),
-        "eval_limit_seconds": result.get("eval_limit_seconds"),
-        "backbone_model_names": list(result.get("backbone_model_names") or []),
-        "seed_accuracy_baseline": result.get("seed_accuracy_baseline"),
-        "seed_train_acc_gap": result.get("seed_train_acc_gap"),
-        "seed_train_acc_improved": result.get("seed_train_acc_improved"),
-        "formal_reward_epochs": list(result.get("formal_reward_epochs") or []),
-        "formal_reward_max_epoch": result.get("formal_reward_max_epoch"),
-        "formal_horizon_test_acc": dict(result.get("formal_horizon_test_acc") or {}),
-        "formal_horizon_train_acc": dict(result.get("formal_horizon_train_acc") or {}),
-        "formal_horizon_scores": dict(result.get("formal_horizon_scores") or {}),
-        "formal_reward_target_value": result.get("formal_reward_target_value"),
-        "error": result.get("error"),
-        "error_type": result.get("error_type"),
-        "error_stage": result.get("error_stage"),
-        "error_context": dict(result.get("error_context") or {}) if result.get("error_context") is not None else None,
-        "error_hint": result.get("error_hint"),
-    }
+    return RewardPayload.nested_eval_payload(
+        result,
+        eval_mode=eval_mode,
+        backbone_frozen=backbone_frozen,
+    )
 
 
 def _merge_dual_eval_results(
@@ -1788,53 +1697,13 @@ def _merge_dual_eval_results(
     unfrozen_result: Optional[Dict[str, Any]],
     cfg: "EvalConfig",
 ) -> Dict[str, Any]:
-    merged = dict(frozen_result)
-    frozen_train_acc = frozen_result.get("train_acc")
-    frozen_test_acc = frozen_result.get("test_acc", frozen_result.get("val_metric"))
-    reward_target_metric = str(getattr(cfg, "reward_target_metric", "frozen_test_acc") or "frozen_test_acc")
-    if reward_target_metric not in {
-        "frozen_test_acc",
-        "frozen_train_acc",
-        FORMAL_MULTI_HORIZON_REWARD_TARGET_METRIC,
-    }:
-        reward_target_metric = "frozen_test_acc"
-
-    if reward_target_metric == FORMAL_MULTI_HORIZON_REWARD_TARGET_METRIC:
-        reward_target_value = _coerce_optional_metric_float(frozen_result.get("formal_reward_target_value"))
-    elif reward_target_metric == "frozen_test_acc":
-        reward_target_value = frozen_test_acc
-    else:
-        reward_target_value = frozen_train_acc
-
-    merged.update(
-        {
-            "test_acc": frozen_test_acc,
-            "train_acc": frozen_train_acc,
-            "val_metric": frozen_test_acc,
-            "frozen_train_acc": frozen_train_acc,
-            "frozen_test_acc": frozen_test_acc,
-            "unfrozen_train_acc": None,
-            "unfrozen_test_acc": None,
-            "frozen_eval": _nested_eval_payload(
-                frozen_result,
-                eval_mode="frozen",
-                backbone_frozen=True,
-            ),
-            "unfrozen_eval": None,
-            "reward_target_metric": reward_target_metric,
-            "reward_target_value": reward_target_value,
-            "formal_reward_epochs": list(frozen_result.get("formal_reward_epochs") or []),
-            "formal_reward_max_epoch": frozen_result.get("formal_reward_max_epoch"),
-            "formal_horizon_test_acc": dict(frozen_result.get("formal_horizon_test_acc") or {}),
-            "formal_horizon_train_acc": dict(frozen_result.get("formal_horizon_train_acc") or {}),
-            "formal_horizon_scores": dict(frozen_result.get("formal_horizon_scores") or {}),
-            "formal_reward_target_value": _coerce_optional_metric_float(
-                frozen_result.get("formal_reward_target_value")
-            ),
-        }
+    return RewardPayload.merge_dual_eval_results(
+        frozen_result=frozen_result,
+        unfrozen_result=unfrozen_result,
+        reward_target_metric=str(getattr(cfg, "reward_target_metric", "frozen_test_acc") or "frozen_test_acc"),
+        formal_multi_horizon_reward_target_metric=FORMAL_MULTI_HORIZON_REWARD_TARGET_METRIC,
+        coerce_optional_metric_float=_coerce_optional_metric_float,
     )
-    return merged
-
 
 def _request_timeout_seconds(cfg: "EvalConfig") -> float:
     base_timeout = float(_effective_eval_limit_seconds(cfg))
@@ -3534,31 +3403,14 @@ def _empty_eval_result(
     eval_limit_seconds: Optional[int] = None,
     backbone_model_names: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
-    components = {
-        "reward": reward,
-        "r_build": 0.0,
-        "r_forward_shape": 0.0,
-        "r_backward": 0.0,
-        "r_loss_drop": 0.0,
-        "r_forward": 0.0,
-        "r_trainstep": 0.0,
-        "r_metric": 0.0,
-        "r_eff": 0.0,
-        "r_critic": 0.0,
-        "r_kl": 0.0,
-    }
-    result = {
-        "reward": reward,
-        "components": components,
-        **_base_eval_result(
-            seed_accuracy_baseline=seed_accuracy_baseline,
-            eval_limit_seconds=eval_limit_seconds,
-            backbone_model_names=backbone_model_names,
-        ),
-    }
-    if error:
-        result["error"] = error
-    return result
+    return RewardPayload.empty_eval_result(
+        reward=reward,
+        error=error,
+        seed_accuracy_baseline=seed_accuracy_baseline,
+        eval_limit_seconds=eval_limit_seconds,
+        backbone_model_names=backbone_model_names,
+        formal_reward_epochs=DEFAULT_FORMAL_REWARD_EPOCHS,
+    )
 
 
 def _timeout_eval_result(
@@ -3602,38 +3454,32 @@ def _timeout_eval_result(
         kl_div=kl_div,
         weights=weights,
     )
-    return {
-        "reward": components["reward"],
-        "components": components,
-        **{
-            **_base_eval_result(
-                seed_accuracy_baseline=seed_accuracy_baseline,
-                eval_limit_seconds=eval_limit_seconds,
-                backbone_model_names=backbone_model_names,
-            ),
-            "built_ok": built_ok,
-            "forward_ok": forward_ok,
-            "forward_shape_ok": forward_shape_ok,
-            "trained_step_ok": trained_step_ok,
-            "backward_ok": backward_ok,
-            "loss_start": loss_start,
-            "loss_end": loss_end,
-            "loss_drop": loss_drop,
-            "loss_drop_ok": loss_drop_ok,
-            "best_epoch_loss": best_epoch_loss,
-            "avg_epoch_loss": avg_epoch_loss,
-            "epochs_completed": int(epochs_completed or 0),
-            "epoch_loss_series": list(epoch_loss_series or []),
-            "training_context_metric_name": training_context_metric_name,
-            "training_context_metric_value": training_context_metric_value,
-            "latency_ms": latency_ms,
-            "params_m": params_m,
-            "timed_out": True,
-            "estimated_total_seconds": estimated_total_seconds,
-            "error": error,
-        },
-    }
-
+    return RewardPayload.timeout_eval_result(
+        components=components,
+        error=error,
+        estimated_total_seconds=estimated_total_seconds,
+        eval_limit_seconds=eval_limit_seconds,
+        seed_accuracy_baseline=seed_accuracy_baseline,
+        backbone_model_names=backbone_model_names,
+        built_ok=built_ok,
+        forward_ok=forward_ok,
+        forward_shape_ok=forward_shape_ok,
+        trained_step_ok=trained_step_ok,
+        backward_ok=backward_ok,
+        loss_start=loss_start,
+        loss_end=loss_end,
+        loss_drop=loss_drop,
+        loss_drop_ok=loss_drop_ok,
+        best_epoch_loss=best_epoch_loss,
+        avg_epoch_loss=avg_epoch_loss,
+        epochs_completed=epochs_completed,
+        epoch_loss_series=epoch_loss_series,
+        training_context_metric_name=training_context_metric_name,
+        training_context_metric_value=training_context_metric_value,
+        latency_ms=latency_ms,
+        params_m=params_m,
+        formal_reward_epochs=DEFAULT_FORMAL_REWARD_EPOCHS,
+    )
 
 def evaluate_and_reward(
     *,

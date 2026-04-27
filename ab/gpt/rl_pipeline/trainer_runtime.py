@@ -23,17 +23,6 @@ def load_tokenizer(tokenizer_source: str):
     return tokenizer
 
 
-def build_bnb_config(torch_dtype):
-    from transformers import BitsAndBytesConfig
-
-    return BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch_dtype,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-    )
-
-
 def load_quantized_causal_lm(
     *,
     model_source: str,
@@ -41,11 +30,16 @@ def load_quantized_causal_lm(
     train_device: str,
     use_deepspeed: bool,
 ):
-    from transformers import AutoModelForCausalLM
+    from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
     model_load_kwargs: Dict[str, Any] = {
         "trust_remote_code": True,
-        "quantization_config": build_bnb_config(precision["torch_dtype"]),
+        "quantization_config": BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=precision["torch_dtype"],
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        ),
         "torch_dtype": precision["torch_dtype"],
     }
     if not use_deepspeed:
@@ -191,10 +185,8 @@ def enforce_non_reentrant_gradient_checkpointing(model: Any) -> Dict[str, int]:
 def enable_non_reentrant_gradient_checkpointing(
     model,
     *,
-    precision: dict,
     log_prefix: str,
 ) -> Dict[str, int]:
-    _ = precision
     model.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": False}
     )
@@ -208,22 +200,6 @@ def enable_non_reentrant_gradient_checkpointing(
         f"roots={gc_patch_stats['roots']} modules={gc_patch_stats['modules']} use_reentrant=False"
     )
     return gc_patch_stats
-
-
-def build_grpo_trainer(
-    *,
-    trainer_cls,
-    model,
-    train_dataset,
-    reward_funcs,
-    args,
-):
-    return trainer_cls(
-        model=model,
-        train_dataset=train_dataset,
-        reward_funcs=reward_funcs,
-        args=args,
-    )
 
 
 def train_grpo(

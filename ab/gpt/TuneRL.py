@@ -1,7 +1,6 @@
 import ast
 import csv
 from datetime import timedelta
-import functools
 import inspect
 import math
 import os
@@ -70,6 +69,7 @@ from peft import LoraConfig, get_peft_model, PeftModel, prepare_model_for_kbit_t
 from trl.trainer.grpo_trainer import GRPOTrainer
 from trl.trainer.grpo_config import GRPOConfig
 from datasets import Dataset
+from ab.gpt.rl_pipeline.trainer_runtime import enforce_non_reentrant_gradient_checkpointing
 import ab.gpt.util.SFTUtil as SFTUtil
 from ab.gpt.util.ArchDiscovery import (
     ensure_pattern_name,
@@ -131,76 +131,6 @@ prev_closed_group_mean_reward_target_by_backbone: Dict[str, float] = {}
 best_closed_group_mean_reward_target_by_backbone: Dict[str, float] = {}
 saved_best_reward_target_by_backbone_cnn: Dict[str, float] = {}
 
-
-def _iter_gradient_checkpoint_roots(model: Any):
-    stack = [model]
-    seen: Set[int] = set()
-    while stack:
-        current = stack.pop()
-        if current is None:
-            continue
-        marker = id(current)
-        if marker in seen:
-            continue
-        seen.add(marker)
-        yield current
-        for attr in ("module", "model", "base_model", "pretrained_model"):
-            try:
-                child = getattr(current, attr, None)
-            except Exception:
-                child = None
-            if child is not None:
-                stack.append(child)
-
-
-def enforce_non_reentrant_gradient_checkpointing(model: Any) -> Dict[str, int]:
-    """Force every reachable checkpoint wrapper to use non-reentrant mode."""
-    if model is None:
-        return {"roots": 0, "modules": 0}
-
-    checkpoint_func = functools.partial(torch.utils.checkpoint.checkpoint, use_reentrant=False)
-    patched_roots = 0
-    patched_modules = 0
-    seen_modules: Set[int] = set()
-
-    for root in _iter_gradient_checkpoint_roots(model):
-        original_enable = getattr(root, "_nngpt_original_gradient_checkpointing_enable", None)
-        if original_enable is None:
-            bound_enable = getattr(root, "gradient_checkpointing_enable", None)
-            if callable(bound_enable):
-                def _wrapped_gradient_checkpointing_enable(*args, _bound_enable=bound_enable, _root=root, **kwargs):
-                    gradient_checkpointing_kwargs = dict(kwargs.get("gradient_checkpointing_kwargs") or {})
-                    gradient_checkpointing_kwargs.setdefault("use_reentrant", False)
-                    kwargs["gradient_checkpointing_kwargs"] = gradient_checkpointing_kwargs
-                    result = _bound_enable(*args, **kwargs)
-                    for module in _root.modules():
-                        if hasattr(module, "_gradient_checkpointing_func"):
-                            module._gradient_checkpointing_func = checkpoint_func
-                    return result
-
-                setattr(root, "_nngpt_original_gradient_checkpointing_enable", bound_enable)
-                setattr(root, "gradient_checkpointing_enable", _wrapped_gradient_checkpointing_enable)
-        patched_roots += 1
-        try:
-            root.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": False}
-            )
-        except Exception:
-            pass
-        try:
-            root.enable_input_require_grads()
-        except Exception:
-            pass
-        for module in root.modules():
-            module_id = id(module)
-            if module_id in seen_modules:
-                continue
-            seen_modules.add(module_id)
-            if hasattr(module, "_gradient_checkpointing_func"):
-                module._gradient_checkpointing_func = checkpoint_func
-                patched_modules += 1
-
-    return {"roots": patched_roots, "modules": patched_modules}
 
 # ===== Configuration Options =====
 base_model = "ABrain/NNGPT-Backbone-deepseek-coder-6.7b-instruct" # 使用新的 Backbone 模型

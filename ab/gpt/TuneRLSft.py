@@ -70,6 +70,7 @@ SFT_VAL_METRIC_BASELINE = 0.10
 # os.environ["TRANSFORMERS_CACHE"] = SFT_TRANSFORMERS_CACHE
 
 import ab.gpt.TuneRL as TuneRL
+import ab.gpt.rl_pipeline.trainer_runtime as TrainerRuntime
 import ab.gpt.util.Reward as RewardUtil
 import ab.gpt.util.SFTUtil as SFTUtil
 import ab.gpt.util.training_runtime as TrainingRuntime
@@ -1556,7 +1557,6 @@ def _build_sft_grpo_config(
 
 def run_sft_training():
     import torch
-    from transformers import BitsAndBytesConfig
 
     if not torch.cuda.is_available():
         raise RuntimeError("SFT RL requires CUDA for GRPO training, but no CUDA device is available")
@@ -1702,86 +1702,64 @@ def run_sft_training():
     tokenizer_source = getattr(TuneRL, "tokenizer_source", TuneRL.base_model)
     if tokenizer_source != TuneRL.base_model:
         print(f"Using RL tokenizer: {tokenizer_source}")
-    tokenizer = TuneRL.AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer = TrainerRuntime.load_tokenizer(tokenizer_source)
 
     rl_dataset = TuneRL.load_rl_dataset(tokenizer)
     if len(rl_dataset) > runtime_settings["dataset_limit"]:
         rl_dataset = rl_dataset.select(range(runtime_settings["dataset_limit"]))
 
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=precision["torch_dtype"],
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-    )
-
-    model_load_kwargs: Dict[str, Any] = {
-        "trust_remote_code": True,
-        "quantization_config": bnb_config,
-        "torch_dtype": precision["torch_dtype"],
-    }
-    if not use_deepspeed:
-        model_load_kwargs["device_map"] = {"": train_device}
-    model = TuneRL.AutoModelForCausalLM.from_pretrained(
-        TuneRL.base_model,
-        **model_load_kwargs,
+    model = TrainerRuntime.load_quantized_causal_lm(
+        model_source=TuneRL.base_model,
+        precision=precision,
+        train_device=train_device,
+        use_deepspeed=use_deepspeed,
     )
     _ = hf_deepspeed_config
 
-    if load_initial_adapter:
-        if not init_adapter_path:
-            raise ValueError("SFT_INIT_ADAPTER is empty, but SFT_LOAD_INITIAL_ADAPTER is True.")
-        if not os.path.exists(init_adapter_path):
-            raise FileNotFoundError(f"Initial adapter not found: {init_adapter_path}")
-        print(f"Loading initial SFT adapter from {init_adapter_path}...")
-        model = TuneRL.PeftModel.from_pretrained(model, init_adapter_path)
-        model = model.merge_and_unload()
+    model = TrainerRuntime.maybe_merge_initial_adapter(
+        model,
+        enabled=load_initial_adapter,
+        adapter_path=init_adapter_path,
+        label="SFT",
+        empty_adapter_message="SFT_INIT_ADAPTER is empty, but SFT_LOAD_INITIAL_ADAPTER is True.",
+        missing_adapter_message=f"Initial adapter not found: {init_adapter_path}",
+        load_message=f"Loading initial SFT adapter from {init_adapter_path}...",
+    )
 
     model = TuneRL.prepare_model_for_kbit_training(model)
     TuneRL.align_generation_head_dtype(model, precision["torch_dtype"])
 
-    peft_config = TuneRL.LoraConfig(
+    peft_config = TrainerRuntime.build_lora_config(
         r=SFT_LORA_R,
-        lora_alpha=SFT_LORA_ALPHA,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        lora_dropout=SFT_LORA_DROPOUT,
-        bias="none",
-        task_type="CAUSAL_LM",
+        alpha=SFT_LORA_ALPHA,
+        dropout=SFT_LORA_DROPOUT,
     )
-    if stage_adapter_dir is not None:
-        if not stage_adapter_dir.exists():
-            raise FileNotFoundError(f"Missing adapter directory under SFT stage checkpoint: {stage_adapter_dir}")
-        print(f"[SFT RL] Loading stage checkpoint adapter from {stage_adapter_dir}...")
-        model = TuneRL.PeftModel.from_pretrained(model, str(stage_adapter_dir), is_trainable=True)
-    else:
-        model = TuneRL.get_peft_model(model, peft_config)
+    model = TrainerRuntime.attach_or_resume_lora(
+        model,
+        peft_config=peft_config,
+        stage_adapter_dir=stage_adapter_dir,
+        log_prefix="[SFT RL]",
+        missing_adapter_message=f"Missing adapter directory under SFT stage checkpoint: {stage_adapter_dir}",
+    )
     TuneRL.align_generation_head_dtype(model, precision["torch_dtype"])
 
-    model.gradient_checkpointing_enable(
-        gradient_checkpointing_kwargs={"use_reentrant": False}
-    )
-    try:
-        model.enable_input_require_grads()
-    except Exception:
-        pass
-    gc_patch_stats = TuneRL.enforce_non_reentrant_gradient_checkpointing(model)
-    print(
-        "[SFT RL] Gradient checkpointing enforcement: "
-        f"roots={gc_patch_stats['roots']} modules={gc_patch_stats['modules']} use_reentrant=False"
+    TrainerRuntime.enable_non_reentrant_gradient_checkpointing(
+        model,
+        precision=precision,
+        log_prefix="[SFT RL]",
     )
     model.print_trainable_parameters()
     TuneRL.active_rl_model = model
     TuneRL.active_rl_tokenizer = tokenizer
 
-    trainer = TuneRL.GRPOTrainer(
+    trainer = TrainerRuntime.build_grpo_trainer(
+        trainer_cls=TuneRL.GRPOTrainer,
         model=model,
         train_dataset=rl_dataset,
         reward_funcs=TuneRL.compute_reward,
         args=grpo_config,
     )
-    trainer_gc_patch_stats = TuneRL.enforce_non_reentrant_gradient_checkpointing(trainer.model)
+    trainer_gc_patch_stats = TrainerRuntime.enforce_non_reentrant_gradient_checkpointing(trainer.model)
     print(
         "[SFT RL] Trainer gradient checkpointing enforcement: "
         f"roots={trainer_gc_patch_stats['roots']} modules={trainer_gc_patch_stats['modules']} use_reentrant=False"
@@ -1800,11 +1778,11 @@ def run_sft_training():
 
     print("Starting GRPO training for Backbone Search...")
     try:
-        if trainer_checkpoint is not None:
-            print(f"[SFT RL] Resuming trainer state from {trainer_checkpoint}...")
-            trainer.train(resume_from_checkpoint=str(trainer_checkpoint))
-        else:
-            trainer.train()
+        TrainerRuntime.train_grpo(
+            trainer=trainer,
+            trainer_checkpoint=trainer_checkpoint,
+            log_prefix="[SFT RL]",
+        )
     except Exception as exc:
         if TuneRL.is_cuda_oom_error(exc):
             TuneRL.log_cuda_oom_diagnostics("sft/trainer.train", exc)

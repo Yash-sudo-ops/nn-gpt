@@ -16,6 +16,8 @@ from os.path import isfile
 import glob
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
+
 import numpy as np
 import pandas as pd
 import torch
@@ -24,10 +26,11 @@ import deepspeed
 from ab.nn.util.Util import release_memory, create_file
 from peft import PeftModel
 from tqdm import tqdm
-from ab.gpt.util.Const import nngpt_dir
+
 import ab.gpt.NNEval as NNEval
 from ab.gpt.util.Chatbot import ChatBot
 from ab.gpt.util.Const import *
+from ab.gpt.util.Const import nngpt_dir
 
 from ab.gpt.util.LLMUtil import quantization_config_4bit
 from ab.gpt.util.LoRA import LoRA
@@ -44,6 +47,7 @@ from ab.gpt.util.Const import nngpt_upload
 from ab.gpt.brute.trans.TransformEval import run_eval
 from ab.gpt.util.prompt.TransformGenPrompt import TransformGenPrompt, load_data_from_folders
 from ab.gpt.agents.state import AgentState
+import ab.gpt.util.training_runtime as TrainingRuntime
 
 ds_conf = conf_dir / 'DeepSpeed.json'
 TRANSFORM_OUT_DIR = trans_dir / 'dataset_epoch1'
@@ -119,7 +123,6 @@ def nn_gen(
 
         num_joint_nns = key_config.get("num_joint_nns", 1)
         use_join = num_joint_nns >= 2
-
         if use_join:
             from ab.nn.util.db.Query import JoinConf
             from ab.gpt.util.lemur_enrichment import patch_join_nn_query, enrich_dataframe
@@ -147,8 +150,8 @@ def nn_gen(
             addon_data = lemur.data(only_best_accuracy=True, task=addon_task) if addon_task else None
 
         output_type = key_config.get("output_type", "code")
-
         nn_code_max_chars = key_config.get("nn_code_max_chars")
+
         for _, row in data.iterrows():
             para_dict = {}
             for it in key_config["input_list"]:
@@ -335,13 +338,11 @@ def nn_gen(
                 code, hp, tr, full_out = output
 
                 makedirs(model_dir, exist_ok=True)
-
-                if output_type == 'classification':
+                if output_type == "classification":
                     create_file(model_dir, new_out_file, full_out)
                     if origdf is not None:
-                        origdf.to_pickle(model_dir / 'dataframe.df')
+                        origdf.to_pickle(model_dir / "dataframe.df")
                     continue
-
                 if save_llm_output:
                     create_file(model_dir, new_out_file, full_out)
 
@@ -382,22 +383,18 @@ def nn_gen(
                     create_file(model_dir, f"original_{origdf['nn']}.py", origdf['nn_code'])
                     origdf.to_pickle(df_file)
 
-    print('[DEBUG] Release memory.')
-    release_memory()
-
-    # === EPOCH TRACKER + MERGE SYSTEM ===
+    # Track generation-side progress even before later merge logic or external
+    # tooling reads cycle_results.json.
     tracker_file = nngpt_dir / "epoch_tracker.json"
-
     if tracker_file.exists():
         try:
             with open(tracker_file) as f:
                 tracker_data = json.load(f)
-        except:
+        except Exception:
             tracker_data = []
     else:
         tracker_data = []
 
-    # Try to get accuracy from cycle_results
     accuracy = None
     cycle_file = nngpt_dir / "cycle_results.json"
     if cycle_file.exists():
@@ -405,23 +402,24 @@ def nn_gen(
             with open(cycle_file) as f:
                 cycle_data = json.load(f)
             accuracy = cycle_data.get("evaluation", {}).get("best_accuracy")
-        except:
+        except Exception:
             pass
 
-    # Add current epoch to list
-    tracker_data.append({
-        "epoch": epoch,
-        "timestamp": datetime.now().isoformat(),
-        "models_generated": len(list(models_dir.glob("B*"))) if exists(models_dir) else 0,
-        "accuracy": accuracy
-    })
-
-    # Save updated list
+    tracker_data.append(
+        {
+            "epoch": epoch,
+            "timestamp": datetime.now().isoformat(),
+            "models_generated": len(list(models_dir.glob("B*"))) if exists(models_dir) else 0,
+            "accuracy": accuracy,
+        }
+    )
     tracker_file.parent.mkdir(parents=True, exist_ok=True)
     with open(tracker_file, "w") as f:
         json.dump(tracker_data, f, indent=2)
-
     print(f"[EPOCH TRACKER] Wrote epoch {epoch} (acc={accuracy})")
+
+    print('[DEBUG] Release memory.')
+    release_memory()
 
 
 def trans_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict_global, test_nn, max_new_tokens, save_llm_output, nn_name_prefix):
@@ -571,17 +569,18 @@ def generate_step(state: AgentState) -> dict:
             use_backbone=state.get("use_backbone",False),
         )
 
+    # Classification prompts may intentionally emit labels or structured output
+    # without generating a runnable new_nn.py file.
     classification_mode = state.get("classification_mode", False)
     has_output = _has_generated_output(out_path) if classification_mode else _has_generated_nn_code(out_path)
     if not has_output:
-        print(f"[INFO] No output generated at epoch {epoch}, skipping evaluation")
+        print(f"[INFO] No code generated at epoch {epoch}, skipping evaluation")
         return {"next_action": "finetune"}
 
     return {"next_action": "evaluate"}
 
 
-def _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode,
-                    classification_mode=False):
+def _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode, classification_mode=False):
     """
     Single source of truth for one evaluation epoch.
     Runs NNEval (trains generated NNs for nn_train_epochs and records accuracy).
@@ -594,6 +593,7 @@ def _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode
     if exists(models_dir):
         if classification_mode:
             from ab.gpt.ClassificationEval import evaluate_epoch as cls_eval
+
             cls_result = cls_eval(models_dir)
             results[f"epoch_{epoch + 1}_accuracy"] = cls_result["accuracy"]
         elif trans_mode:
@@ -604,16 +604,17 @@ def _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode
                 print(f"Error running evaluation main(): {e}", flush=True)
             print('Folder data reload will occur next epoch.')
         else:
-            NNEval.main(nn_name_prefix, nn_train_epochs, epoch)
-
-
+            NNEval.main(
+                nn_name_prefix=nn_name_prefix,
+                nn_train_epochs=nn_train_epochs,
+                only_epoch=epoch,
+            )
             print('[DEBUG] Release_memory.')
             release_memory()
 
         print('Clear LEMUR query cache.')
         lemur.data.cache_clear()
         print('The cache has been cleared.')
-
 
     # Read accuracy from cycle_results.json (written by NNEval after evaluation)
     cycle_file = out_path.parent / "cycle_results.json"
@@ -739,6 +740,7 @@ def _finetune_epoch(
     train_config_path, only_best_accuracy, max_prompts,
     max_new_tokens, base_model_name, trans_mode,
     temperature=1.0, top_k=50, top_p=0.9,
+    resume_trainer_checkpoint=None,
     use_backbone=False,
 ):
     """
@@ -776,7 +778,13 @@ def _finetune_epoch(
 
     print("Dataset length:", len(dataset))
     model.train()
-    model = lora_tuner.train(dataset, tokenizer, out_path / base_model_name)
+    model = lora_tuner.train(
+        dataset,
+        tokenizer,
+        out_path / base_model_name,
+        resume_from_checkpoint=resume_trainer_checkpoint,
+        checkpoint_label="trainer",
+    )
 
     del dataset
     release_memory()
@@ -800,6 +808,7 @@ def finetune_step(state: AgentState) -> dict:
         state.get("max_prompts"), state["max_new_tokens"],
         state["base_model_name"], state.get("trans_mode", False),
         state.get("temperature", 1.0), state.get("top_k", 50), state.get("top_p", 0.9),
+        state.get("trainer_resume_checkpoint"),
         state.get("use_backbone", False),
     )
 
@@ -808,12 +817,25 @@ def finetune_step(state: AgentState) -> dict:
         "chat_bot": chat_bot,
         "current_epoch": epoch + 1,
         "next_action": "generate",
+        "trainer_resume_checkpoint": None,
     }
 
 
 # ============================================================
 # MAIN: tune()
 # ============================================================
+
+
+def _resolve_tune_resume_trainer_checkpoint(initial_adapter_path) -> Optional[str]:
+    # Classic mode and agent mode both consume the same one-shot trainer resume path.
+    resume_spec = TrainingRuntime.resolve_resume_spec(
+        trainer_env="NNGPT_TRAIN_RESUME_TRAINER_CHECKPOINT",
+        initial_adapter_active=bool(initial_adapter_path),
+        initial_adapter_label="llm_path/--peft",
+    )
+    if resume_spec.trainer_checkpoint is None:
+        return None
+    return str(resume_spec.trainer_checkpoint)
 
 def tune(
     test_nn,
@@ -839,10 +861,10 @@ def tune(
     prompt_batch=1,
     use_agents=False,
     use_predictor=False,
-    use_backbone=False,
-    enable_merge=False,
     use_unsloth=False,
+    enable_merge=False,
     classification_mode=False,
+    use_backbone=False,
 ):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
@@ -899,6 +921,7 @@ def tune(
 
     model = model_loader.get_model()
     tokenizer = model_loader.get_tokenizer()
+    trainer_resume_checkpoint = _resolve_tune_resume_trainer_checkpoint(llm_path)
 
     if llm_path:
         print(f'Load saved LoRA layer from path: {llm_path}')
@@ -959,6 +982,7 @@ def tune(
 
         "use_predictor": use_predictor,
         "use_backbone": use_backbone,
+        "trainer_resume_checkpoint": trainer_resume_checkpoint,
         "enable_merge": enable_merge,
         "classification_mode": classification_mode,
     }
@@ -980,8 +1004,7 @@ def tune(
             else:
                 nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, test_nn, max_new_tokens, save_llm_output, nn_name_prefix, unsloth_max_input_length, prompt_batch, use_backbone=use_backbone)
 
-            _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode,
-                            classification_mode)
+            _evaluate_epoch(epoch, out_path, nn_name_prefix, nn_train_epochs, trans_mode, classification_mode)
 
         print(f'[DEBUG]Perform finetune at epoch {epoch}.')
         model, chat_bot = _finetune_epoch(
@@ -990,5 +1013,7 @@ def tune(
             train_config_path, only_best_accuracy, max_prompts,
             max_new_tokens, base_model_name, trans_mode,
             temperature, top_k, top_p,
+            trainer_resume_checkpoint,
             use_backbone=use_backbone,
         )
+        trainer_resume_checkpoint = None

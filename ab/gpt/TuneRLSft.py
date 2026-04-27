@@ -130,25 +130,6 @@ def _extract_xml_tag(text: str, tag: str) -> str:
     return TuneRL.clean_block(match.group(1)) if match else ""
 
 
-def _extract_function_block(text: str, fn_name: str) -> str:
-    lines = text.splitlines()
-    for start_index, line in enumerate(lines):
-        if not re.match(rf"^\s*def {re.escape(fn_name)}\s*\(", line):
-            continue
-        indent = len(line) - len(line.lstrip())
-        end_index = len(lines)
-        for scan_index in range(start_index + 1, len(lines)):
-            stripped = lines[scan_index].lstrip()
-            if not stripped:
-                continue
-            indent_scan = len(lines[scan_index]) - len(stripped)
-            if (stripped.startswith("def ") or stripped.startswith("class ")) and indent_scan <= indent:
-                end_index = scan_index
-                break
-        return textwrap.dedent("\n".join(lines[start_index:end_index])).strip()
-    return ""
-
-
 def _dedupe_keep_order(items: Sequence[str]) -> List[str]:
     deduped: List[str] = []
     seen = set()
@@ -158,18 +139,6 @@ def _dedupe_keep_order(items: Sequence[str]) -> List[str]:
         seen.add(item)
         deduped.append(item)
     return deduped
-
-
-def _clean_source_text(text: str) -> str:
-    if not text:
-        return ""
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = text.replace("```python", "").replace("```", "")
-    text = text.replace("<s=", "=")
-    text = text.replace("torch.concat(", "torch.cat(")
-    text = text.replace("torch.concatenate(", "torch.cat(")
-    text = text.replace("self.adaptive_pool_flatten(", "adaptive_pool_flatten(")
-    return text.strip()
 
 
 def _completion_cache_key(text: str) -> str:
@@ -544,15 +513,6 @@ def raw_reward_fn(
     }
     res.setdefault("backbone_model_names", list(meta.get("backbone_model_names", [])))
     return res
-
-
-def _sft_runtime_state_hooks() -> TrainingRuntime.RuntimeStateHooks:
-    # SFT reuses the RL reward runtime state so checkpoint resume stays compatible.
-    return TrainingRuntime.RuntimeStateHooks(
-        capture=TuneRL.capture_reward_runtime_state,
-        restore=TuneRL.restore_reward_runtime_state,
-        reset=TuneRL.reset_reward_runtime_state,
-    )
 
 
 def _sft_runtime_state_hooks() -> TrainingRuntime.RuntimeStateHooks:

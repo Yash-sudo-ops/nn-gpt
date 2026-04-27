@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset, Subset
+from torch.utils.data import DataLoader, Subset
 
 
 _NN_DATASET_IMPORT_READY = False
@@ -2073,16 +2073,6 @@ def _count_params_m(model: nn.Module) -> float:
     return sum(p.numel() for p in model.parameters()) / 1e6
 
 
-def _freeze_dual_backbones(model: nn.Module) -> None:
-    for backbone_name in ("backbone_a", "backbone_b"):
-        backbone = getattr(model, backbone_name, None)
-        if backbone is None:
-            continue
-        for param in backbone.parameters():
-            param.requires_grad = False
-        backbone.eval()
-
-
 def _set_dual_backbones_trainable(model: nn.Module, *, freeze_backbones: bool) -> None:
     for backbone_name in ("backbone_a", "backbone_b"):
         backbone = getattr(model, backbone_name, None)
@@ -2138,23 +2128,6 @@ def _quick_forward(
             "output_shape": None,
             "error": f"{type(exc).__name__}: {exc}",
         }
-
-
-def _toy_loader(
-    n: int = 128,
-    input_shape: Tuple[int, int, int, int] = (2, 3, 32, 32),
-    n_classes: int = 10,
-    device: str = "cpu",
-    batch_size: int = 16
-) -> DataLoader:
-    """
-    Fallback DataLoader with random data for quick sanity train/val.
-    """
-    N = max(n, batch_size)
-    x = torch.randn((N,) + input_shape[1:], device=device)
-    y = torch.randint(0, n_classes, (N,), device=device)
-    ds = TensorDataset(x, y)
-    return DataLoader(ds, batch_size=batch_size, shuffle=True)
 
 
 def _train_steps(
@@ -2882,26 +2855,6 @@ def _restore_formal_eval_cuda_backend(state: Optional[Dict[str, Any]]) -> None:
         torch.backends.cudnn.benchmark = bool(state.get("cudnn_benchmark", False))
     except Exception:
         pass
-
-
-def _formal_first_batch_loss(trainer: Any, prm: Dict[str, Any]) -> Optional[float]:
-    try:
-        trainer.model.train_setup(prm)
-        trainer.model.eval()
-        batch = next(iter(trainer.train_loader))
-        inputs, labels = batch
-        inputs = inputs.to(trainer.device)
-        labels = labels.to(trainer.device)
-        outputs = trainer.model(inputs)
-        criterion = getattr(trainer.model, "criterion", None)
-        if criterion is None:
-            criterion = nn.CrossEntropyLoss().to(trainer.device)
-        loss = criterion(outputs, labels)
-        if not torch.isfinite(loss):
-            return None
-        return float(loss.detach().item())
-    except Exception:
-        return None
 
 
 def _coerce_optional_metric_float(value: Any) -> Optional[float]:

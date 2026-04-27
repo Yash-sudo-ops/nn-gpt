@@ -2322,23 +2322,6 @@ def _stage2_gate_ready() -> bool:
     )
 
 
-def _stage_recovery_needed(stage_name: str) -> bool:
-    if stage_name not in {STAGE2_FORMAL_EXPLORE, STAGE3_FORMAL_OPTIMIZE}:
-        return False
-    recent_groups = _recent_stage_group_window(stage_name, 5)
-    recent_generations = _recent_stage_generation_window(stage_name, RECOVERY_GATE_WINDOW_GENERATIONS)
-    if len(recent_groups) < 5 or len(recent_generations) < RECOVERY_GATE_WINDOW_GENERATIONS:
-        return False
-    mean_dominant_share = _mean_dominant_share(recent_groups)
-    discovery_rows = [item for item in recent_generations if bool(item.get("discovery_candidate"))]
-    unique_discovery_families = len(_family_hash_set(discovery_rows, key="family_hash"))
-    return bool(
-        mean_dominant_share is not None
-        and mean_dominant_share > STAGE_RECOVERY_DOMINANT_SHARE_THRESHOLD
-        and unique_discovery_families <= STAGE_RECOVERY_NEW_DISCOVERY_FAMILIES_MAX
-    )
-
-
 def _stage_gate_snapshot() -> Dict[str, Any]:
     stage_name = str(current_stage_name)
     recent_generations = _recent_stage_generation_window(

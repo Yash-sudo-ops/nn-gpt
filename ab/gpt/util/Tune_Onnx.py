@@ -1,4 +1,4 @@
-# ab/gpt/util/Tune.py
+# ab/gpt/util/Tune_Onnx.py
 
 import os
 import shutil
@@ -454,7 +454,6 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
             para_dict = dict()
             for it in prompt_dict_key['input_list']:
                 para_dict[it['para']] = row[it['value']]
-
             if nn_code_max_chars and 'nn_code' in para_dict and isinstance(para_dict['nn_code'], str):
                 para_dict['nn_code'] = para_dict['nn_code'][:nn_code_max_chars]
 
@@ -490,8 +489,8 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
             code, hp, tr, full_out = output
 
             makedirs(model_dir, exist_ok=True)
-
-            # Classification: save raw output + ground truth, skip code extraction
+            # Classification prompts may only need the raw model output plus
+            # source metadata, without constructing a runnable new_nn.py file.
             if output_type == 'classification':
                 create_file(model_dir, new_out_file, full_out)
                 if origdf is not None:
@@ -577,9 +576,16 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
     if exists(models_dir):
         if classification_mode:
             from ab.gpt.ClassificationEval import evaluate_epoch as cls_eval
+
             cls_eval(models_dir)
         else:
-            NNEval.main(nn_name_prefix, nn_train_epochs, epoch)
+            # Use keyword arguments so future NNEval entrypoint growth does not
+            # silently remap positional arguments here.
+            NNEval.main(
+                nn_name_prefix=nn_name_prefix,
+                nn_train_epochs=nn_train_epochs,
+                only_epoch=epoch,
+            )
 
     print('[DEBUG] Release_memory.')
     release_memory()

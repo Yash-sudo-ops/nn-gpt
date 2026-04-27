@@ -37,6 +37,7 @@ class AgentState(TypedDict, total=False):
     context_length: Optional[int]
     use_unsloth: bool
     unsloth_max_input_length: Optional[int]
+    trainer_resume_checkpoint: Optional[str]
 
     # ---- Sampling ----
     temperature: float

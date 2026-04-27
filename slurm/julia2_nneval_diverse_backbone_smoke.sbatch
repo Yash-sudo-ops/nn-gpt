@@ -20,6 +20,40 @@ cd /home/s471802/nn-gpt
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
 export PYTHONPATH="/home/s471802/nn-dataset:/home/s471802/nn-gpt:${PYTHONPATH:-}"
+
+runtime_nn="/home/s471802/nn-gpt/ab/nn"
+runtime_backups=()
+runtime_links=()
+for component in loader transform metric; do
+  src="/home/s471802/nn-dataset/ab/nn/${component}"
+  dst="${runtime_nn}/${component}"
+  backup="${dst}.nneval_backup_${SLURM_JOB_ID:-$$}"
+  if [ -L "${dst}" ]; then
+    rm "${dst}"
+  elif [ -e "${dst}" ]; then
+    mv "${dst}" "${backup}"
+    runtime_backups+=("${dst}:${backup}")
+  fi
+  ln -s "${src}" "${dst}"
+  runtime_links+=("${dst}")
+done
+
+cleanup_runtime_links() {
+  for dst in "${runtime_links[@]}"; do
+    if [ -L "${dst}" ]; then
+      rm "${dst}"
+    fi
+  done
+  for pair in "${runtime_backups[@]}"; do
+    dst="${pair%%:*}"
+    backup="${pair#*:}"
+    if [ -e "${backup}" ] && [ ! -e "${dst}" ]; then
+      mv "${backup}" "${dst}"
+    fi
+  done
+}
+trap cleanup_runtime_links EXIT
+
 export NNGPT_NNEVAL_MAX_WORKERS_PER_GPU="${NNGPT_NNEVAL_MAX_WORKERS_PER_GPU:-2}"
 export NNGPT_NNEVAL_WORKER_BUDGET_GIB="${NNGPT_NNEVAL_WORKER_BUDGET_GIB:-8}"
 export NNGPT_NNEVAL_RESERVED_HEADROOM_GIB="${NNGPT_NNEVAL_RESERVED_HEADROOM_GIB:-3}"

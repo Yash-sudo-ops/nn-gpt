@@ -17,27 +17,9 @@ mkdir -p /home/s471802/nn-gpt/slurm_logs
 source /home/s471802/.venv/bin/activate
 cd /home/s471802/nn-gpt
 
-runtime_nn="/home/s471802/nn-gpt/ab/nn"
-cleanup_runtime_nn=0
-if [ -e "${runtime_nn}" ] || [ -L "${runtime_nn}" ]; then
-  if [ ! -d "${runtime_nn}" ]; then
-    echo "Invalid runtime ab/nn path: ${runtime_nn}" >&2
-    exit 1
-  fi
-else
-  ln -s /home/s471802/nn-dataset/ab/nn "${runtime_nn}"
-  cleanup_runtime_nn=1
-fi
-
-cleanup() {
-  if [ "${cleanup_runtime_nn}" = "1" ] && [ -L "${runtime_nn}" ]; then
-    rm "${runtime_nn}"
-  fi
-}
-trap cleanup EXIT
-
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
+export PYTHONPATH="/home/s471802/nn-dataset:/home/s471802/nn-gpt:${PYTHONPATH:-}"
 export NNGPT_NNEVAL_MAX_WORKERS_PER_GPU="${NNGPT_NNEVAL_MAX_WORKERS_PER_GPU:-2}"
 export NNGPT_NNEVAL_WORKER_BUDGET_GIB="${NNGPT_NNEVAL_WORKER_BUDGET_GIB:-8}"
 export NNGPT_NNEVAL_RESERVED_HEADROOM_GIB="${NNGPT_NNEVAL_RESERVED_HEADROOM_GIB:-3}"

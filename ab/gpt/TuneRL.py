@@ -64,12 +64,11 @@ def _install_rl_runtime_noise_filters() -> None:
 _install_rl_runtime_noise_filters()
 
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments
-from peft import LoraConfig, get_peft_model, PeftModel, prepare_model_for_kbit_training
+from peft import prepare_model_for_kbit_training
 from trl.trainer.grpo_trainer import GRPOTrainer
 from trl.trainer.grpo_config import GRPOConfig
 from datasets import Dataset
-from ab.gpt.rl_pipeline.trainer_runtime import enforce_non_reentrant_gradient_checkpointing
+import ab.gpt.rl_pipeline.trainer_runtime as TrainerRuntime
 import ab.gpt.util.SFTUtil as SFTUtil
 from ab.gpt.util.ArchDiscovery import (
     ensure_pattern_name,
@@ -6035,9 +6034,7 @@ def main():
             f"valid_generation_values={runtime_settings['valid_generation_values']} "
             f"world_size={world_size}"
         )
-    tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer = TrainerRuntime.load_tokenizer(base_model)
 
     # Load RL dataset (limit for training speed)
     rl_dataset = load_rl_dataset(tokenizer)
@@ -6045,67 +6042,48 @@ def main():
     if len(rl_dataset) > dataset_limit:
         rl_dataset = rl_dataset.select(range(dataset_limit))
 
-    from transformers import BitsAndBytesConfig
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=precision["torch_dtype"],
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-    )
-
-    # Load model (merged SFT) with 4-bit quantization
-    model_load_kwargs: Dict[str, Any] = {
-        "trust_remote_code": True,
-        "quantization_config": bnb_config,
-        "torch_dtype": precision["torch_dtype"],
-    }
-    if not use_deepspeed:
-        model_load_kwargs["device_map"] = {"": train_device}
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        **model_load_kwargs,
+    model = TrainerRuntime.load_quantized_causal_lm(
+        model_source=base_model,
+        precision=precision,
+        train_device=train_device,
+        use_deepspeed=use_deepspeed,
     )
     _ = hf_deepspeed_config
 
     if LOAD_EXISTING_MODEL and os.path.exists(SAVED_MODEL_PATH):
-        print(f"Loading extra SFT adapter from {SAVED_MODEL_PATH}...")
-        model = PeftModel.from_pretrained(model, SAVED_MODEL_PATH)
-        model = model.merge_and_unload()
+        model = TrainerRuntime.maybe_merge_initial_adapter(
+            model,
+            enabled=True,
+            adapter_path=SAVED_MODEL_PATH,
+            label="extra SFT",
+            load_message=f"Loading extra SFT adapter from {SAVED_MODEL_PATH}...",
+        )
 
     model = prepare_model_for_kbit_training(model)
     align_generation_head_dtype(model, precision["torch_dtype"])
 
     # Apply LoRA specifically for RL phase
-    peft_config = LoraConfig(
-        r=16, # Optimized further for memory (was 32)
-        lora_alpha=32,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM"
+    peft_config = TrainerRuntime.build_lora_config(
+        r=16,
+        alpha=32,
+        dropout=0.05,
     )
     resume_adapter_dir = (resume_checkpoint_dir / "adapter") if resume_checkpoint_dir is not None else None
-    if resume_adapter_dir is not None and resume_adapter_dir.exists():
-        print(f"[RL] Loading RL adapter from {resume_adapter_dir}...")
-        model = PeftModel.from_pretrained(model, str(resume_adapter_dir), is_trainable=True)
-    elif resume_checkpoint_dir is not None:
-        raise FileNotFoundError(f"Missing adapter directory under resume checkpoint: {resume_adapter_dir}")
-    else:
-        model = get_peft_model(model, peft_config)
+    model = TrainerRuntime.attach_or_resume_lora(
+        model,
+        peft_config=peft_config,
+        stage_adapter_dir=resume_adapter_dir,
+        log_prefix="[RL]",
+        missing_adapter_message=f"Missing adapter directory under resume checkpoint: {resume_adapter_dir}",
+        load_message=f"[RL] Loading RL adapter from {resume_adapter_dir}..." if resume_adapter_dir is not None else None,
+    )
     align_generation_head_dtype(model, precision["torch_dtype"])
 
     # Enable gradient checkpointing to save memory
-    model.gradient_checkpointing_enable(
-        gradient_checkpointing_kwargs={"use_reentrant": False}
-    )
-    try:
-        model.enable_input_require_grads()
-    except Exception:
-        pass
-    gc_patch_stats = enforce_non_reentrant_gradient_checkpointing(model)
-    print(
-        "[RL] Gradient checkpointing enforcement: "
-        f"roots={gc_patch_stats['roots']} modules={gc_patch_stats['modules']} use_reentrant=False"
+    TrainerRuntime.enable_non_reentrant_gradient_checkpointing(
+        model,
+        precision=precision,
+        log_prefix="[RL]",
     )
 
     model.print_trainable_parameters()
@@ -6136,13 +6114,14 @@ def main():
         runtime_settings=runtime_settings,
     )
 
-    trainer = GRPOTrainer(
+    trainer = TrainerRuntime.build_grpo_trainer(
+        trainer_cls=GRPOTrainer,
         model=model,
         train_dataset=rl_dataset,
         reward_funcs=compute_reward, 
         args=grpo_config,
     )
-    trainer_gc_patch_stats = enforce_non_reentrant_gradient_checkpointing(trainer.model)
+    trainer_gc_patch_stats = TrainerRuntime.enforce_non_reentrant_gradient_checkpointing(trainer.model)
     print(
         "[RL] Trainer gradient checkpointing enforcement: "
         f"roots={trainer_gc_patch_stats['roots']} modules={trainer_gc_patch_stats['modules']} use_reentrant=False"
@@ -6152,7 +6131,11 @@ def main():
 
     print("Starting GRPO training for Backbone Search...")
     try:
-        trainer.train()
+        TrainerRuntime.train_grpo(
+            trainer=trainer,
+            trainer_checkpoint=None,
+            log_prefix="[RL]",
+        )
     except Exception as exc:
         if is_cuda_oom_error(exc):
             log_cuda_oom_diagnostics("rl/trainer.train", exc)

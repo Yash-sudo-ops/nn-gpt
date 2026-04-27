@@ -105,6 +105,7 @@ def attach_or_resume_lora(
     stage_adapter_dir,
     log_prefix: str,
     missing_adapter_message: Optional[str] = None,
+    load_message: Optional[str] = None,
 ):
     from peft import PeftModel, get_peft_model
 
@@ -112,7 +113,7 @@ def attach_or_resume_lora(
         adapter_dir = Path(stage_adapter_dir)
         if not adapter_dir.exists():
             raise FileNotFoundError(missing_adapter_message or f"Missing adapter directory: {adapter_dir}")
-        print(f"{log_prefix} Loading stage checkpoint adapter from {adapter_dir}...")
+        print(load_message or f"{log_prefix} Loading stage checkpoint adapter from {adapter_dir}...")
         return PeftModel.from_pretrained(model, str(adapter_dir), is_trainable=True)
     return get_peft_model(model, peft_config)
 

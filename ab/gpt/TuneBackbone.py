@@ -3,7 +3,7 @@ import sys
 from peft import LoraConfig
 from transformers import TrainingArguments
 from ab.gpt.util.Tune import tune
-from ab.gpt.util.Const import nngpt_dir
+from ab.gpt.util.Const import nngpt_dir, conf_train_dir
 
 def main():
     parser = argparse.ArgumentParser(description='Run Backbone Tuning.')
@@ -51,7 +51,7 @@ def main():
         skip_epoch=0,   
         llm_path=None,
         llm_tune_conf='backbone_prompt.json',
-        nn_gen_conf='backbone_prompt.json',
+        nn_gen_conf=str(conf_train_dir / 'backbone_prompt.json'),
         conf_keys=['backbone_fractal'],
         llm_conf=args.llm_conf,
         training_args=training_args,

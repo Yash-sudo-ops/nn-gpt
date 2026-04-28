@@ -58,7 +58,7 @@ def alter(epochs, test_conf, llm_name, gguf_file=None, n=1, temperature=0.6, top
         prompt_dict = json.load(f)
     assert isinstance(prompt_dict, dict)
 
-    model_loader = LLM(llm_name, gguf_file=gguf_file, load_in_4bit=True)
+    model_loader = LLM(llm_name, gguf_file=gguf_file, load_in_4bit=kwargs.get('load_in_4bit', False))
     model = model_loader.get_model()
     tokenizer = model_loader.get_tokenizer()
     print(f"Load Model Complete, Start Loop... (Will fetch {n} supporting models per prompt)")
@@ -73,12 +73,11 @@ def alter(epochs, test_conf, llm_name, gguf_file=None, n=1, temperature=0.6, top
             prompt = ""
             for pr in prompt_dict[key]['prompt']:
                 prompt += pr + "\n"
-            # Get nn-dataset codes
-            data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['task'])
-            # Priority: kwargs > JSON config
+            # Get nn-dataset codes with SQL-level prefix filtering
             current_prefixes = nn_prefixes or prompt_dict[key].get('nn_prefixes')
-            if current_prefixes:
-                data = data[data.nn.str.startswith(tuple(current_prefixes))]
+            if isinstance(current_prefixes, list):
+                current_prefixes = tuple(current_prefixes)
+            data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['task'], nn_prefixes=current_prefixes)
             data = data.groupby(by="nn").sample(n=1)
             # Get addon nn-dataset codes
             addon_data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['addon_task'])
@@ -265,7 +264,7 @@ def alter_delta(epochs, test_conf, llm_name, gguf_file=None, n=1, temperature=0.
         print("[WARNING] Config file does not have delta mode enabled. Falling back to regular alter().")
         return alter(epochs, test_conf, llm_name, gguf_file, n, temperature, top_k)
 
-    model_loader = LLM(llm_name, gguf_file=gguf_file, load_in_4bit=True)
+    model_loader = LLM(llm_name, gguf_file=gguf_file, load_in_4bit=kwargs.get('load_in_4bit', False))
     model = model_loader.get_model()
     tokenizer = model_loader.get_tokenizer()
     print(f"Load Model Complete, Start Loop... (Delta mode enabled)")
@@ -280,12 +279,11 @@ def alter_delta(epochs, test_conf, llm_name, gguf_file=None, n=1, temperature=0.
             prompt = ""
             for pr in prompt_dict[key]['prompt']:
                 prompt += pr + "\n"
-            # Get nn-dataset codes
-            data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['task'])
-            # Priority: kwargs > JSON config
+            # Get nn-dataset codes with SQL-level prefix filtering
             current_prefixes = nn_prefixes or prompt_dict[key].get('nn_prefixes')
-            if current_prefixes:
-                data = data[data.nn.str.startswith(tuple(current_prefixes))]
+            if isinstance(current_prefixes, list):
+                current_prefixes = tuple(current_prefixes)
+            data = nn_dataset.data(only_best_accuracy=True, task=prompt_dict[key]['task'], nn_prefixes=current_prefixes)
             data = data.groupby(by="nn").sample(n=1)
             # Get addon nn-dataset codes (if addon_task is specified)
             addon_data = None

@@ -157,7 +157,16 @@ def _load_existing_success_result(model_dir_path: Path) -> Optional[Dict[str, An
     }
 
 
-def _save_success_to_db(spec: Dict[str, Any], result: Dict[str, Any], nn_code: str) -> None:
+def _success_prm(spec: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    eval_args = result.get("eval_args")
+    if isinstance(eval_args, dict) and isinstance(eval_args.get("prm"), dict):
+        return dict(eval_args["prm"])
+    if spec.get("save_to_db"):
+        raise KeyError("eval_args.prm")
+    return dict(spec["prm"])
+
+
+def _save_success_to_db(spec: Dict[str, Any], result: Dict[str, Any], nn_code: str, prm: Dict[str, Any]) -> None:
     if not spec.get("save_to_db"):
         return
 
@@ -174,17 +183,19 @@ def _save_success_to_db(spec: Dict[str, Any], result: Dict[str, Any], nn_code: s
         spec["task"],
         spec["dataset"],
         spec["metric"],
-        int(spec["prm"].get("epoch", 1)),
-        spec["prm"],
+        int(prm.get("epoch", 1)),
+        prm,
         force_name=force_name,
     )
+    print(f"Model saved to database with accuracy: {float(result['accuracy'])}")
 
 
 def _write_success_outputs(spec: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
     model_dir_path = Path(spec["model_dir"])
     accuracy = float(result["accuracy"])
     nn_code = read_py_file_as_string(spec["code_file"])
-    _save_success_to_db(spec, result, nn_code)
+    prm = _success_prm(spec, result)
+    _save_success_to_db(spec, result, nn_code, prm)
     eval_info_data = {
         "eval_args": result.get("eval_args", {}),
         "eval_results": {
@@ -196,15 +207,15 @@ def _write_success_outputs(spec: Dict[str, Any], result: Dict[str, Any]) -> Dict
             "task": spec["task"],
             "dataset": spec["dataset"],
             "metric": spec["metric"],
-            "lr": spec["prm"].get("lr"),
-            "batch": spec["prm"].get("batch"),
-            "dropout": spec["prm"].get("dropout"),
-            "momentum": spec["prm"].get("momentum"),
-            "transform": spec["prm"].get("transform"),
+            "lr": prm.get("lr"),
+            "batch": prm.get("batch"),
+            "dropout": prm.get("dropout"),
+            "momentum": prm.get("momentum"),
+            "transform": prm.get("transform"),
         },
     }
     (model_dir_path / "1.json").write_text(
-        json.dumps([{"epoch": int(spec["prm"].get("epoch", 1)), "accuracy": accuracy}], indent=2),
+        json.dumps([{"epoch": int(prm.get("epoch", 1)), "accuracy": accuracy}], indent=2),
         encoding="utf-8",
     )
     (model_dir_path / "eval_info.json").write_text(

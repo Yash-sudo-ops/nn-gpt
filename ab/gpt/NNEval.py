@@ -583,11 +583,11 @@ def main(
                         timeout_seconds=60.0,
                     )
                     entries = [{"payload": request} for request in requests]
-                    worker_results = NNEvalWorkerPool.evaluate_model_entries(
+                    for request_index, worker_result in NNEvalWorkerPool.iter_evaluate_model_entries(
                         entries,
                         use_all_visible_gpus=resolved_use_all_visible_gpus,
-                    )
-                    for request, worker_result in zip(requests, worker_results):
+                    ):
+                        request = requests[request_index]
                         model_id = request["model_id"]
                         if worker_result.get("success"):
                             print(f"  Evaluation results for {model_id}: {worker_result}")

@@ -6,6 +6,7 @@ import time
 import traceback
 import multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor
+from queue import Queue
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
@@ -840,23 +841,39 @@ class _NNEvalWorkerPool:
             self._replace_session(slot)
         return result
 
-    def map_entries(self, entries: List[Dict[str, Any]], *, timeout: float) -> List[Dict[str, Any]]:
+    def iter_entries(self, entries: List[Dict[str, Any]], *, timeout: float):
         if not entries:
-            return []
+            return
         if self.worker_count() <= 1:
-            return [self._request_entry(0, entry, timeout=timeout) for entry in entries]
+            for index, entry in enumerate(entries):
+                yield index, self._request_entry(0, entry, timeout=timeout)
+            return
 
-        indexed_results: List[Optional[Dict[str, Any]]] = [None] * len(entries)
         assignments: List[List[Tuple[int, Dict[str, Any]]]] = [[] for _ in self._sessions]
         for index, entry in enumerate(entries):
             slot = index % self.worker_count()
             assignments[slot].append((index, entry))
 
-        def _process_worker_tasks(slot: int, tasks: List[Tuple[int, Dict[str, Any]]]) -> List[Tuple[int, Dict[str, Any]]]:
-            return [
-                (index, self._request_entry(slot, entry, timeout=timeout))
-                for index, entry in tasks
-            ]
+        result_queue = Queue()
+        done_marker = object()
+
+        def _process_worker_tasks(slot: int, tasks: List[Tuple[int, Dict[str, Any]]]) -> None:
+            try:
+                for index, entry in tasks:
+                    try:
+                        result = self._request_entry(slot, entry, timeout=timeout)
+                    except Exception as exc:
+                        session_info = self._sessions[slot].diagnostics() if slot < len(self._sessions) else {}
+                        result = self._failure_result_for_entry(
+                            entry,
+                            error=f"{type(exc).__name__}: {exc}",
+                            worker_slot=int(session_info.get("slot", slot)),
+                            assigned_gpu=session_info.get("assigned_gpu"),
+                            worker_device=str(session_info.get("worker_device", "cpu")),
+                        )
+                    result_queue.put((index, result))
+            finally:
+                result_queue.put(done_marker)
 
         non_empty_assignments = [(slot, tasks) for slot, tasks in enumerate(assignments) if tasks]
         with ThreadPoolExecutor(max_workers=len(non_empty_assignments)) as executor:
@@ -864,9 +881,23 @@ class _NNEvalWorkerPool:
                 executor.submit(_process_worker_tasks, slot, tasks)
                 for slot, tasks in non_empty_assignments
             ]
+            finished_workers = 0
+            while finished_workers < len(futures):
+                item = result_queue.get()
+                if item is done_marker:
+                    finished_workers += 1
+                    continue
+                yield item
             for future in futures:
-                for index, result in future.result():
-                    indexed_results[index] = result
+                future.result()
+
+    def map_entries(self, entries: List[Dict[str, Any]], *, timeout: float) -> List[Dict[str, Any]]:
+        if not entries:
+            return []
+
+        indexed_results: List[Optional[Dict[str, Any]]] = [None] * len(entries)
+        for index, result in self.iter_entries(entries, timeout=timeout):
+            indexed_results[index] = result
 
         return [
             result
@@ -1042,6 +1073,46 @@ def evaluate_model_entries(
             for entry in entries
         ]
     return pool.map_entries(normalized_entries, timeout=max_timeout)
+
+
+def iter_evaluate_model_entries(
+    entries: List[Dict[str, Any]],
+    *,
+    use_all_visible_gpus: bool,
+):
+    if not entries:
+        return
+    normalized_entries = [
+        {
+            **entry,
+            "payload": {
+                "cmd": "evaluate_model",
+                **dict(entry.get("payload") or {}),
+            },
+        }
+        for entry in entries
+    ]
+    max_timeout = max(_request_timeout_seconds(entry["payload"]) for entry in entries)
+    require_gpu = bool(torch.cuda.is_available())
+    pool = _await_nneval_worker_pool(
+        use_all_visible_gpus=use_all_visible_gpus,
+        require_gpu=require_gpu,
+        timeout=max_timeout,
+    )
+    if pool is None:
+        for index, entry in enumerate(entries):
+            yield index, {
+                "success": False,
+                "model_id": str(entry["payload"].get("model_id", "")),
+                "error": "PersistentNNEvalWorkerError: timed out waiting for available GPU worker",
+                "traceback": "",
+                "is_oom": False,
+                "assigned_gpu": None,
+                "worker_device": "cpu",
+                "worker_slot": -1,
+            }
+        return
+    yield from pool.iter_entries(normalized_entries, timeout=max_timeout)
 
 
 def _persistent_nneval_worker_entry(conn, assigned_gpu: Optional[int], assigned_cuda_visible_device: Optional[str]) -> None:

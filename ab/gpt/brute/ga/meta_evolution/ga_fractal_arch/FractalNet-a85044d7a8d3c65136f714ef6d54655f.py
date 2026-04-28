@@ -8,7 +8,7 @@ def supported_hyperparameters():
 
 # --- Helper Classes ---
 class FractalDropPath(nn.Module):
-    def __init__(self, drop_prob: float = 0.1):
+    def __init__(self, drop_prob: float = 0.3):
         super().__init__()
         self.drop_prob = drop_prob
 
@@ -62,9 +62,9 @@ class Net(nn.Module):
         blocks = []
         pools = []
         trans_layers = []
-        cur_chan = 64
+        cur_chan = 32
         for i in range(3):
-            blocks.append(FractalBlock(3, cur_chan, 0.0))
+            blocks.append(FractalBlock(2, cur_chan, 0.3))
             pools.append(nn.MaxPool2d(2))
             if i < 3 - 1:
                 next_chan = cur_chan * 2

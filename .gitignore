@@ -7,6 +7,7 @@ data_v2/
 __pycache__/
 *.pyc
 .venv/
+.idea/
 db/ab.nn.db
 db/ab.nn.db-journal
 out/
@@ -31,6 +32,8 @@ test/
 ab/gpt/brute/ga/modular/FracStats/
 ab/gpt/brute/ga/modular/Fractals/
 ab/gpt/util/Testing.py
+ab/gpt/nn
+ab/nn
 .cache/*
 .DS_Store
 

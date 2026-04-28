@@ -1,11 +1,5 @@
-# ab/gpt/util/Merge.py
-"""
-NN-GPT Merge System
 
-Command-line:
-  python -m ab.gpt.util.Merge --auto        # Auto-select best epoch
-  python -m ab.gpt.util.Merge --cycle 5     # Manual merge epoch 5
-"""
+
 
 import argparse
 import json
@@ -162,50 +156,62 @@ def save_lineage(lineage):
 
 
 def merge_multiple_adapters(base_model, adapter_paths, output_path):
-    """Merge multiple adapters sequentially"""
-    print("\n[DEBUG] === INSIDE MERGE_MULTIPLE_ADAPTERS ===")
-    print(f"[DEBUG] Loading base model from: {base_model}")
-    print(f"[DEBUG] Base model is path: {Path(base_model).exists()}")
-    print("[MERGE] Starting multi-adapter merge")
-    print(f"[MERGE] Base model: {base_model}")
-    print(f"[MERGE] Adapters to apply: {len(adapter_paths)}")
 
-    for i, p in enumerate(adapter_paths):
-        print(f"[MERGE]   {i + 1}. {p}")
+    import gc
+    import shutil
 
-    print(f"[DEBUG] Loading model with device_map=auto, trust_remote_code=True")
+    print(f"[MERGE] Base: {base_model}")
+    print(f"[MERGE] Adapters: {len(adapter_paths)}")
+
+    offload_dir = Path("/tmp/nngpt_offload")
+    offload_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Load base model on CPU with optional disk offload ---
+    print("[MERGE] Loading base model (CPU/offload)...")
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
-        device_map="auto",
-        trust_remote_code=True,
         torch_dtype=torch.float16,
+        device_map="auto",
+        low_cpu_mem_usage=True,
+        offload_folder=str(offload_dir),
+        offload_state_dict=True
     )
+    print("[MERGE] ✓ Base model loaded")
 
-    print(f"[DEBUG] ✓ Model loaded successfully")
-    print(f"[DEBUG] Model type: {type(model)}")
-    print(f"[DEBUG] Model device: {next(model.parameters()).device}")
-
+    # --- Apply adapters sequentially ---
     for i, adapter_path in enumerate(adapter_paths):
-        print(f"[MERGE] Applying adapter {i}/{len(adapter_paths)}: {adapter_path}")
-        model = PeftModel.from_pretrained(model, str(adapter_path),
-                                          trust_remote_code=True,
-                                          device_map="auto",
-                                          torch_dtype=torch.float16
-                                          )
-        model = model.merge_and_unload()
-        print(f"[DEBUG] ✓ Adapter {i} merged and unloaded")
+        print(f"\n[MERGE] Adapter {i + 1}/{len(adapter_paths)}")
+        print(f"[MERGE] Path: {adapter_path}")
 
-    print(f"[DEBUG] Saving merged model to {output_path}")
+        model = PeftModel.from_pretrained(
+            model,
+            str(adapter_path),
+            is_trainable=False,
+            device_map="auto"
+        )
+
+        print("[MERGE] → merging...")
+        model = model.merge_and_unload()
+
+        # --- aggressive cleanup ---
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        print(f"[MERGE] ✓ Done {i + 1}/{len(adapter_paths)}")
+
+    # --- Save ---
+    print(f"\n[MERGE] Saving → {output_path}")
     output_path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(output_path)
 
-    print(f"[DEBUG] Saving tokenizer")
+    print("[MERGE] Saving tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
     tokenizer.save_pretrained(output_path)
 
-    print(f"[MERGE] ✓✓✓ MERGE COMPLETE ✓✓✓")
-    print(f"[MERGE] Output: {output_path}")
+    # --- Cleanup offload directory ---
+    shutil.rmtree(offload_dir, ignore_errors=True)
 
+    print("\n[MERGE] ✓✓✓ COMPLETE ✓✓✓\n")
 
 def rebuild_from_lineage():
     """
@@ -247,8 +253,8 @@ def rebuild_from_lineage():
         if acc is None or acc == 0.0:
             print("No accuracy for epoch {}")
             continue
-            # acc = min(0.40 + epoch * 0.03, 0.99)  # Fake for testing
-            # print(f"[EPOCH {epoch}] Using fake accuracy: {acc:.4f}")
+            #acc = min(0.40 + epoch * 0.03, 0.99)  # Fake for testing
+            #print(f"[EPOCH {epoch}] Using fake accuracy: {acc:.4f}")
 
         acc = float(acc)
         valid_epochs.append((epoch, acc))
@@ -380,4 +386,4 @@ def merge_nn_llm(epoch: int):
 
 if __name__ == "__main__":
     rebuild_from_lineage()
-    # merge_nn_llm(0)
+    #merge_nn_llm(0)

@@ -739,6 +739,7 @@ def _finetune_epoch(
     temperature=1.0, top_k=50, top_p=0.9,
     resume_trainer_checkpoint=None,
     use_backbone=False,
+    sft_nn_prefixes=None,
 ):
     """
     Single source of truth for one finetune epoch.
@@ -757,7 +758,8 @@ def _finetune_epoch(
         from ab.gpt.util.prompt.SFTGenPrompt import SFTGenPrompt
         data_processor = SFTGenPrompt(
             context_length if context_length else model_loader.get_max_length(),
-            tokenizer
+            tokenizer,
+            nn_prefixes=sft_nn_prefixes,
         )
     else:
         length = (
@@ -807,6 +809,7 @@ def finetune_step(state: AgentState) -> dict:
         state.get("temperature", 1.0), state.get("top_k", 50), state.get("top_p", 0.9),
         state.get("trainer_resume_checkpoint"),
         state.get("use_backbone", False),
+        state.get("sft_nn_prefixes"),
     )
 
     return {
@@ -862,6 +865,8 @@ def tune(
     enable_merge=False,
     classification_mode=False,
     use_backbone=False,
+    sft_nn_prefixes=None,
+    num_cycles=None,
 ):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
@@ -880,7 +885,7 @@ def tune(
     else:
         print(f"[EVOLUTION] Using base model from config: {base_model_name}")
 
-    llm_tune_epochs = int(config["num_epochs"])
+    llm_tune_epochs = int(num_cycles) if num_cycles is not None else int(config["num_epochs"])
     use_deepspeed = config["use_deepspeed"]
     only_best_accuracy = config["only_best_accuracy"]
     context_length = config.get("context_length")
@@ -979,6 +984,7 @@ def tune(
 
         "use_predictor": use_predictor,
         "use_backbone": use_backbone,
+        "sft_nn_prefixes": sft_nn_prefixes,
         "trainer_resume_checkpoint": trainer_resume_checkpoint,
         "enable_merge": enable_merge,
         "classification_mode": classification_mode,
@@ -1012,5 +1018,6 @@ def tune(
             temperature, top_k, top_p,
             trainer_resume_checkpoint,
             use_backbone=use_backbone,
+            sft_nn_prefixes=sft_nn_prefixes,
         )
         trainer_resume_checkpoint = None

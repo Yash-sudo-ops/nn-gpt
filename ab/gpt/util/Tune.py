@@ -125,7 +125,8 @@ def nn_gen(
         use_join = num_joint_nns >= 2
         if use_join:
             from ab.nn.util.db.Query import JoinConf
-
+            from ab.gpt.util.lemur_enrichment import patch_join_nn_query, enrich_dataframe
+            patch_join_nn_query()
             data = lemur.data(
                 only_best_accuracy=True,
                 task=key_config["task"],
@@ -136,6 +137,8 @@ def nn_gen(
                     enhance_nn=key_config.get("improve", False),
                 ),
             )[:test_nn]
+            if key_config.get("output_type") == "classification":
+                enrich_dataframe(data)
             addon_data = None
         else:
             data = (

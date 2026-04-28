@@ -429,6 +429,8 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
 
         num_joint_nns = prompt_dict_key.get('num_joint_nns') or 1
         if num_joint_nns >= 2:
+            from ab.gpt.util.lemur_enrichment import patch_join_nn_query, enrich_dataframe
+            patch_join_nn_query()
             data = lemur.data(
                 only_best_accuracy=True,
                 task=prompt_dict_key['task'],
@@ -440,6 +442,8 @@ def nn_gen(epoch, out_path, chat_bot, conf_keys, nn_train_epochs, prompt_dict, t
                     enhance_nn=prompt_dict_key.get('improve', False)
                 )
             ).groupby(by='nn').sample(n=1)[:test_nn]
+            if output_type == 'classification':
+                enrich_dataframe(data)
             addon_data = None  # JoinConf already pairs the data — no separate addon needed
         else:
             data = lemur.data(only_best_accuracy=True, task=prompt_dict_key['task']).groupby(by='nn').sample(n=1)[:test_nn]

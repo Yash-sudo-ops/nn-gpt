@@ -157,45 +157,9 @@ def _load_existing_success_result(model_dir_path: Path) -> Optional[Dict[str, An
     }
 
 
-def _success_prm(spec: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
-    eval_args = result.get("eval_args")
-    if isinstance(eval_args, dict) and isinstance(eval_args.get("prm"), dict):
-        return dict(eval_args["prm"])
-    if spec.get("save_to_db"):
-        raise KeyError("eval_args.prm")
-    return dict(spec["prm"])
-
-
-def _save_success_to_db(spec: Dict[str, Any], result: Dict[str, Any], nn_code: str, prm: Dict[str, Any]) -> None:
-    if not spec.get("save_to_db"):
-        return
-
-    import ab.nn.util.db.Write as DB_Write
-
-    force_name = result.get("checksum")
-    if not force_name:
-        force_name = uuid4(nn_code)
-        prefix = spec.get("prefix")
-        if prefix:
-            force_name = f"{prefix}-{force_name}"
-    DB_Write.save_nn(
-        nn_code,
-        spec["task"],
-        spec["dataset"],
-        spec["metric"],
-        int(prm.get("epoch", 1)),
-        prm,
-        force_name=force_name,
-    )
-    print(f"Model saved to database with accuracy: {float(result['accuracy'])}")
-
-
 def _write_success_outputs(spec: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
     model_dir_path = Path(spec["model_dir"])
     accuracy = float(result["accuracy"])
-    nn_code = read_py_file_as_string(spec["code_file"])
-    prm = _success_prm(spec, result)
-    _save_success_to_db(spec, result, nn_code, prm)
     eval_info_data = {
         "eval_args": result.get("eval_args", {}),
         "eval_results": {
@@ -207,15 +171,15 @@ def _write_success_outputs(spec: Dict[str, Any], result: Dict[str, Any]) -> Dict
             "task": spec["task"],
             "dataset": spec["dataset"],
             "metric": spec["metric"],
-            "lr": prm.get("lr"),
-            "batch": prm.get("batch"),
-            "dropout": prm.get("dropout"),
-            "momentum": prm.get("momentum"),
-            "transform": prm.get("transform"),
+            "lr": spec["prm"].get("lr"),
+            "batch": spec["prm"].get("batch"),
+            "dropout": spec["prm"].get("dropout"),
+            "momentum": spec["prm"].get("momentum"),
+            "transform": spec["prm"].get("transform"),
         },
     }
     (model_dir_path / "1.json").write_text(
-        json.dumps([{"epoch": int(prm.get("epoch", 1)), "accuracy": accuracy}], indent=2),
+        json.dumps([{"epoch": int(spec["prm"].get("epoch", 1)), "accuracy": accuracy}], indent=2),
         encoding="utf-8",
     )
     (model_dir_path / "eval_info.json").write_text(
@@ -229,7 +193,7 @@ def _write_success_outputs(spec: Dict[str, Any], result: Dict[str, Any]) -> Dict
     if verification_failure_path.exists():
         verification_failure_path.unlink()
 
-    nn_name = uuid4(nn_code)
+    nn_name = uuid4(read_py_file_as_string(spec["code_file"]))
     lemur_prefix = spec.get("lemur_prefix")
     if lemur_prefix:
         nn_name = str(lemur_prefix) + "-" + nn_name
@@ -583,28 +547,15 @@ def main(
                         timeout_seconds=60.0,
                     )
                     entries = [{"payload": request} for request in requests]
-                    for request_index, worker_result in NNEvalWorkerPool.iter_evaluate_model_entries(
+                    worker_results = NNEvalWorkerPool.evaluate_model_entries(
                         entries,
                         use_all_visible_gpus=resolved_use_all_visible_gpus,
-                    ):
-                        request = requests[request_index]
+                    )
+                    for request, worker_result in zip(requests, worker_results):
                         model_id = request["model_id"]
                         if worker_result.get("success"):
                             print(f"  Evaluation results for {model_id}: {worker_result}")
-                            try:
-                                epoch_results.append(_write_success_outputs(request, worker_result))
-                            except Exception as exc:
-                                print(f"  Error finalizing model {model_id}: {exc}")
-                                epoch_results.append(
-                                    _write_failure_outputs(
-                                        request,
-                                        {
-                                            "error": f"Error finalizing successful evaluation: {exc}",
-                                            "traceback": traceback.format_exc(),
-                                            "is_oom": False,
-                                        },
-                                    )
-                                )
+                            epoch_results.append(_write_success_outputs(request, worker_result))
                         else:
                             print(f"  Error evaluating model {model_id}: {worker_result.get('error')}")
                             epoch_results.append(_write_failure_outputs(request, worker_result))

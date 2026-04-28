@@ -53,11 +53,8 @@ ab/gpt/._*
 ab/gpt/util/._*
 AGENTS.md
 JULIA2_RUNBOOK_CN.md
-scripts/julia2_plot_and_fetch.sh
-slurm/julia2_tunerlsft_gpu_smoke.sbatch
-slurm/julia2_tunerlsft_h100_smoke.sbatch
-slurm/julia2_tunerlsft_long_run.sbatch
-slurm/julia2_tunerlsft_resume_smoke.sbatch
+scripts/*
+slurm/*
 test_plot_rl_reward.py
 test_reward_prevalidation.py
 test_tunerl_reward_logic.py

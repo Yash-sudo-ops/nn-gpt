@@ -426,7 +426,7 @@ def _execute_nneval_task(payload: Dict[str, Any]) -> Dict[str, Any]:
         dataset=str(payload["dataset"]),
         metric=str(payload["metric"]),
         prm=dict(payload["prm"] or {}),
-        save_to_db=bool(payload.get("save_to_db", False)),
+        save_to_db=False,
         prefix=payload.get("prefix"),
         save_path=payload.get("save_path"),
         use_ast_validation=payload.get("use_ast_validation"),

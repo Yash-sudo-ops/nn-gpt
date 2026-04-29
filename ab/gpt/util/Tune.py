@@ -44,6 +44,7 @@ from ab.gpt.util.Util import (
 from ab.gpt.util.prompt.NNGenPrompt import NNGenPrompt
 from ab.gpt.util.DeltaUtil import apply_delta, validate_delta, repair_code
 from ab.gpt.util.Const import nngpt_upload
+import ab.gpt.util.SFTUtil as SFTUtil
 from ab.gpt.brute.trans.TransformEval import run_eval
 from ab.gpt.util.prompt.TransformGenPrompt import TransformGenPrompt, load_data_from_folders
 from ab.gpt.agents.state import AgentState
@@ -156,6 +157,11 @@ def nn_gen(
             para_dict = {}
             for it in key_config["input_list"]:
                 para_dict[it["para"]] = row[it["value"]]
+            if use_backbone:
+                target_pattern = None
+                if "nn_code" in row and isinstance(row["nn_code"], str):
+                    target_pattern = SFTUtil.extract_target_pattern_from_code(row["nn_code"])
+                para_dict["target_pattern"] = target_pattern or SFTUtil.available_patterns[len(prompts) % len(SFTUtil.available_patterns)]
             if nn_code_max_chars and "nn_code" in para_dict and isinstance(para_dict["nn_code"], str):
                 para_dict["nn_code"] = para_dict["nn_code"][:nn_code_max_chars]
 
@@ -336,6 +342,10 @@ def nn_gen(
             for (idx, prompt_text, origdf, output_type), output in zip(batch, batch_outputs):
                 model_dir = models_dir / f"B{idx}"
                 code, hp, tr, full_out = output
+                if use_backbone:
+                    code = SFTUtil.assemble_backbone_xml_completion(full_out)
+                    if code is None:
+                        print(f'[ERROR] Missing backbone XML tags for model B{idx}')
 
                 makedirs(model_dir, exist_ok=True)
                 if output_type == "classification":

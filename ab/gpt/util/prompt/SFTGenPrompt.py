@@ -55,12 +55,14 @@ class SFTGenPrompt(Prompt):
             accuracy = row['accuracy']
             
             block_code, init_code, forward_code = SFTUtil.parse_nn_code(full_code)
+            target_pattern = SFTUtil.extract_target_pattern_from_code(full_code)
             
-            if block_code and init_code and forward_code:
+            if block_code and init_code and forward_code and target_pattern:
                 assistant_response = f"<block>\n{block_code}\n</block>\n<init>\n{init_code}\n</init>\n<forward>\n{forward_code}\n</forward>"
                 messages = [
                     {"role": "user", "content": SFTUtil.prompt_template.format(
                         accuracy=accuracy, 
+                        target_pattern=target_pattern,
                         skeleton_code=SFTUtil.skeleton_code, 
                         available_patterns=", ".join(SFTUtil.available_patterns), 
                         available_backbones=", ".join(SFTUtil.available_backbones)
@@ -75,7 +77,7 @@ class SFTGenPrompt(Prompt):
                 )
                 formatted_data.append({"text": text})
             else:
-                 print(f"Skipping row {row.name} due to parsing failure")
+                 print(f"Skipping row {row.name} due to parsing failure or missing target_pattern")
 
         return DataFrame(formatted_data)
 

@@ -1,4 +1,5 @@
 import ast
+import re
 import textwrap
 
 available_backbones = ['convnext_tiny', 'densenet121', 'densenet161', 'densenet169', 'densenet201', 'efficientnet_b0', 'efficientnet_b1', 'efficientnet_b2', 'efficientnet_b3', 'efficientnet_b4', 'efficientnet_v2_s', 'googlenet', 'inception_v3', 'mnasnet0_5', 'mnasnet0_75', 'mnasnet1_0', 'mnasnet1_3', 'mobilenet_v2', 'mobilenet_v3_large', 'mobilenet_v3_small', 'regnet_x_400mf', 'regnet_x_800mf', 'regnet_x_1_6gf', 'regnet_x_3_2gf', 'regnet_y_400mf', 'regnet_y_800mf', 'resnet18', 'resnet34', 'resnet50', 'resnext50_32x4d', 'shufflenet_v2_x0_5', 'shufflenet_v2_x1_0', 'shufflenet_v2_x1_5', 'shufflenet_v2_x2_0', 'squeezenet1_0', 'squeezenet1_1', 'swin_t', 'swin_v2_t']
@@ -9,7 +10,11 @@ available_patterns = [
     'Backbone_B_to_Fractal', 
     'Dual_Backbone_Fuse_Then_Fractal',
     'Fractal_Then_Dual_Backbone',
-    'Split_Stem_Parallel_Fuse'
+    'Split_Stem_Parallel_Fuse',
+    'Fractal_to_DualBackbone',
+    'B_to_Fractal_plus_A',
+    'A_to_Fractal_plus_B',
+    'A_to_Fractal_to_B'
 ]
 
 legacy_patterns = tuple(available_patterns)
@@ -387,6 +392,74 @@ Read the optimization feedback below, then write the final XML answer. The final
 
 open_discovery_prompt_template = compact_backbone_rl_prompt_template
 open_discovery_rl_prompt_template = compact_backbone_rl_prompt_template
+
+
+def extract_target_pattern_from_code(code_str):
+    try:
+        tree = ast.parse(code_str)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == 'pattern'
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == 'self'
+                ):
+                    value = node.value
+                    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                        return value.value
+    except Exception:
+        pass
+    match = re.search(r"self\.pattern\s*=\s*['\"]([^'\"]+)['\"]", code_str or "")
+    return match.group(1) if match else None
+
+
+def _extract_xml_tag(text, tag):
+    if not isinstance(text, str):
+        return None
+    pattern = re.compile(rf"<{tag}>\s*(.*?)\s*</{tag}>", re.IGNORECASE | re.DOTALL)
+    match = pattern.search(text)
+    return match.group(1).strip() if match else None
+
+
+def _strip_code_fence(code):
+    if not isinstance(code, str):
+        return None
+    cleaned = code.strip()
+    cleaned = re.sub(r"^```(?:python)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    return textwrap.dedent(cleaned).strip()
+
+
+def assemble_backbone_xml_completion(completion):
+    block_code = _strip_code_fence(_extract_xml_tag(completion, 'block'))
+    init_code = _strip_code_fence(_extract_xml_tag(completion, 'init'))
+    forward_code = _strip_code_fence(_extract_xml_tag(completion, 'forward'))
+    if not (block_code and init_code and forward_code):
+        return None
+
+    code = skeleton_code
+    replacements = (
+        (
+            "def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):",
+            block_code,
+        ),
+        (
+            "    def __init__(self, in_shape: tuple, out_shape: tuple, prm: dict, device: torch.device) -> None:",
+            textwrap.indent(init_code, "    "),
+        ),
+        (
+            "    def forward(self, x: torch.Tensor, is_probing: bool = False) -> torch.Tensor:",
+            textwrap.indent(forward_code, "    "),
+        ),
+    )
+    for signature, replacement in replacements:
+        if signature not in code:
+            raise ValueError(f"Backbone skeleton signature not found: {signature}")
+        code = code.replace(signature, replacement, 1)
+    return code
 
 def parse_nn_code(code_str):
     try:

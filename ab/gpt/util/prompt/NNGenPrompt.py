@@ -1,4 +1,6 @@
 import json
+import re
+import math
 
 import ab.nn.api as lemur
 from overrides import override
@@ -14,6 +16,56 @@ from ab.nn.util.db.Query import JoinConf
 
 def shuffle_data(df: DataFrame):
     return df.sample(frac=1).reset_index(drop=True)
+
+
+# ========== FORMULA EVALUATION FUNCTION ==========
+def evaluate_delimited_formulas(text: str, para_dict: dict) -> str:
+    """
+    Find patterns like <<accuracy / duration>> and replace with calculated values.
+    Works for ANY formula inside << >> delimiters.
+    """
+    pattern = r'<<(.*?)>>'
+    
+    def replace_match(match):
+        formula = match.group(1).strip()
+        try:
+            expr = formula
+            # Replace variable names with their values
+            for key in sorted(para_dict.keys(), key=len, reverse=True):
+                val = para_dict[key]
+                try:
+                    val = float(val)
+                except (ValueError, TypeError):
+                    pass
+                if isinstance(val, (int, float)):
+                    expr = re.sub(rf'\b{re.escape(key)}\b', str(val), expr)
+            
+            # Safe evaluation
+            safe_globals = {
+                "__builtins__": {},
+                "math": math,
+                "abs": abs,
+                "round": round,
+                "min": min,
+                "max": max,
+            }
+            result = eval(expr, safe_globals)
+            
+            # Format result nicely
+            if isinstance(result, float):
+                if abs(result) < 0.001:
+                    return f"{result:.2e}"
+                elif result > 100:
+                    return f"{result:.1f}"
+                else:
+                    return f"{result:.4f}"
+            return str(result)
+        except Exception as e:
+            print(f"[FORMULA ERROR] '{formula}' - {e}")
+            return f"<<{formula}>>"
+    
+    return re.sub(pattern, replace_match, text)
+# =================================================
 
 
 class NNGenPrompt(Prompt):
@@ -48,18 +100,39 @@ class NNGenPrompt(Prompt):
             # For JOIN queries, do NOT pass max_rows — the LIMIT applies before
             # the JOIN and causes an O(n²) correlated scan. Slice the result after.
             use_join = num_joint_nns >= 2
-            data = lemur.data(
-                only_best_accuracy=only_best_accuracy,
-                task=key_dict.get('task'),
-                nn_prefixes=tuple(key_dict.get('nn_prefixes')),
-                max_rows=n_training_prompts,
-                sql=None if not use_join else JoinConf(
-                    num_joint_nns=num_joint_nns,
-                    same_columns=tuple(key_dict.get('keep_same', [])),
-                    diff_columns=tuple(key_dict.get('no_repeat', [])),
-                    enhance_nn=key_dict.get('improve', False)
-                )
+
+            # ========== SMALL SWITCH TO DETECT PRUNING CONFIG ==========
+            # Check if this is a pruning task (key starts with 'pruning' or contains 'pruning')
+            is_pruning = (
+                key.lower().startswith('pruning') or 
+                'pruning' in key.lower()
             )
+            
+            print(f"[DEBUG] Key: {key}, is_pruning: {is_pruning}")
+            
+            if is_pruning:
+                # Use prun table for pruning statistics
+                data = lemur.prun_data(max_rows=n_training_prompts)
+                # Filter only successful pruning experiments
+                if 'status' in data.columns:
+                    data = data[data['status'] == 'success']
+                print(f"[PRUN] Fetched {len(data)} records from PRUN table for key: {key}")
+            else:
+                # Original behavior for regular tasks (stat table)
+                data = lemur.data(
+                    only_best_accuracy=only_best_accuracy,
+                    task=key_dict.get('task'),
+                    nn_prefixes=tuple(key_dict.get('nn_prefixes') or []),
+                    max_rows=n_training_prompts,
+                    sql=None if not use_join else JoinConf(
+                        num_joint_nns=num_joint_nns,
+                        same_columns=tuple(key_dict.get('keep_same', [])),
+                        diff_columns=tuple(key_dict.get('no_repeat', [])),
+                        enhance_nn=key_dict.get('improve', False)
+                    )
+                )
+                print(f"[STAT] Fetched {len(data)} records from STAT table for key: {key}")
+            # ==========================================================
 
             print('Data acquisition complete', flush=True)
 
@@ -67,13 +140,41 @@ class NNGenPrompt(Prompt):
             use_delta = key_dict.get('use_delta', False) or 'delta' in key.lower()
 
             for _, row in tqdm(data.iterrows(), total=n_training_prompts or len(data)):
-                # print(f'Row keys: {list(row.index)}', flush=True)
                 if n_training_prompts and len(dataframe) >= n_training_prompts:
                     break
+                
                 para_dict = dict()
                 for it in prompt_dict[key]['input_list']:
-                    para_dict[it['para']] = row[it['value']]
+                    # Handle column name mapping gracefully
+                    db_column = it['value']
+                    try:
+                        if db_column in row:
+                            para_dict[it['para']] = row[db_column]
+                        elif db_column == 'model_name' and 'nn' in row:
+                            para_dict[it['para']] = row['nn']
+                        elif db_column == 'nn' and 'model_name' in row:
+                            para_dict[it['para']] = row['model_name']
+                        else:
+                            para_dict[it['para']] = row.get(db_column, f"Missing: {db_column}")
+                    except Exception as e:
+                        print(f"[WARNING] Could not get column '{db_column}': {e}")
+                        para_dict[it['para']] = None
+
+                nn_code_max_chars = key_dict.get('nn_code_max_chars')
+                if nn_code_max_chars and 'nn_code' in para_dict and isinstance(para_dict['nn_code'], str):
+                    para_dict['nn_code'] = para_dict['nn_code'][:nn_code_max_chars]
+
+                # Inject columns referenced in the output template but absent from input_list
+                if key_dict.get('output_type') == 'classification':
+                    output_template = '\n'.join(key_dict['output'])
+                    for col in row.index:
+                        if f'{{{col}}}' in output_template and col not in para_dict:
+                            para_dict[col] = row[col]
+
+                # ========== APPLY FORMULA EVALUATION TO PROMPT ==========
                 inst = prompt.format(**para_dict)
+                inst = evaluate_delimited_formulas(inst, para_dict)
+                # ========================================================
 
                 # Compute delta if delta mode is enabled
                 if use_delta and 'addon_nn_code' in para_dict and 'nn_code' in para_dict:
@@ -112,14 +213,23 @@ class NNGenPrompt(Prompt):
                     output = '\n'.join(prompt_dict[key]['output'])
                     response = output.format(**para_dict)
 
+                # ========== APPLY FORMULA EVALUATION TO RESPONSE ==========
+                response = evaluate_delimited_formulas(response, para_dict)
+                # ==========================================================
+
+                # ========== PRINT FOR VERIFICATION (AFTER response EXISTS) ==========
+                if len(dataframe) < 10:
+                    print(f"\n[EXAMPLE {len(dataframe)+1}]:")
+                    print(f"INPUT: {inst[:300]}...")
+                    print(f"OUTPUT: {response[:300]}...")
+                    print("-" * 50)
+                # ================================================================
+
                 text = self.tokenizer.apply_chat_template(
                     [
                         {'role': 'user', 'content': inst},
                         {'role': 'assistant', 'content': response}
                     ], tokenize=False)
-
-                # print(f"Prompt: {inst}", flush=True)
-                # print(f"Output: {response}", flush=True)
 
                 dataframe.loc[len(dataframe)] = [inst, "", response, "", text]
 

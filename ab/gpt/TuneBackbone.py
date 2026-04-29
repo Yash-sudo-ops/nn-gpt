@@ -1,7 +1,7 @@
 import argparse
 import sys
 from peft import LoraConfig
-from transformers import TrainingArguments
+from trl import SFTConfig
 from ab.gpt.util.Tune import tune
 from ab.gpt.util.Const import nngpt_dir, conf_train_dir
 
@@ -18,7 +18,7 @@ def main():
     args = parser.parse_args()
 
     # Training Arguments
-    training_args = TrainingArguments(
+    training_args = SFTConfig(
         output_dir=str(nngpt_dir / 'outputs'),
         per_device_train_batch_size=2,
         gradient_accumulation_steps=4,
@@ -29,6 +29,8 @@ def main():
         save_strategy="no",
         report_to="none",
         remove_unused_columns=False,
+        packing_strategy="wrapped",
+        padding_free=False,
         gradient_checkpointing=True
     )
 

@@ -3,7 +3,9 @@ import pandas as pd
 import argparse
 import os
 
-DB_PATH = "/home/tehreem/nn-gpt/db/ab.nn.db"
+from ab.nn.util.Const import ab_root_path
+
+DB_PATH = ab_root_path / "db/ab.nn.db"
 
 def main():
     parser = argparse.ArgumentParser(description="Query and explore the SQLite database.")

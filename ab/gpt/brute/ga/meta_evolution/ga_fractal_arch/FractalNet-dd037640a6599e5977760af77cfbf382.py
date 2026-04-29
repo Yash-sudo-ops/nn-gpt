@@ -8,7 +8,7 @@ def supported_hyperparameters():
 
 # --- Helper Classes ---
 class FractalDropPath(nn.Module):
-    def __init__(self, drop_prob: float = 0.1):
+    def __init__(self, drop_prob: float = 0.2):
         super().__init__()
         self.drop_prob = drop_prob
 
@@ -58,15 +58,15 @@ class Net(nn.Module):
             nn.ReLU(inplace=True)
         )
 
-        # Dynamically build 3 fractal block(s) with channel doubling
+        # Dynamically build 2 fractal block(s) with channel doubling
         blocks = []
         pools = []
         trans_layers = []
-        cur_chan = 64
-        for i in range(3):
-            blocks.append(FractalBlock(3, cur_chan, 0.0))
+        cur_chan = 32
+        for i in range(2):
+            blocks.append(FractalBlock(1, cur_chan, 0.2))
             pools.append(nn.MaxPool2d(2))
-            if i < 3 - 1:
+            if i < 2 - 1:
                 next_chan = cur_chan * 2
                 trans_layers.append(nn.Sequential(
                     nn.Conv2d(cur_chan, next_chan, kernel_size=1),

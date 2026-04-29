@@ -85,7 +85,7 @@ class NNGenPrompt(Prompt):
         """
         prompt_lists = []
 
-        with open(self.prompts_path) as prompt_file:
+        with open(self.prompts_path) as prompt_file: # /workspace/nn-gpt/ab/gpt/conf/prompt/train/NN_gen.json
             prompt_dict = json.load(prompt_file)
         assert isinstance(prompt_dict, dict)
 

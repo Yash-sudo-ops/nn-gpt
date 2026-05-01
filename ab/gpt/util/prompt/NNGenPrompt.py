@@ -1,6 +1,4 @@
 import json
-import re
-import math
 
 import ab.nn.api as lemur
 from overrides import override
@@ -13,60 +11,11 @@ from ab.gpt.util.lemur_enrichment import patch_join_nn_query, enrich_dataframe
 from tqdm import tqdm
 
 from ab.nn.util.db.Query import JoinConf
+from ab.gpt.util.Util import evaluate_delimited_formulas
 
 
 def shuffle_data(df: DataFrame):
     return df.sample(frac=1).reset_index(drop=True)
-
-
-# ========== FORMULA EVALUATION FUNCTION ==========
-def evaluate_delimited_formulas(text: str, para_dict: dict) -> str:
-    """
-    Find patterns like <<accuracy / duration>> and replace with calculated values.
-    Works for ANY formula inside << >> delimiters.
-    """
-    pattern = r'<<(.*?)>>'
-    
-    def replace_match(match):
-        formula = match.group(1).strip()
-        try:
-            expr = formula
-            # Replace variable names with their values
-            for key in sorted(para_dict.keys(), key=len, reverse=True):
-                val = para_dict[key]
-                try:
-                    val = float(val)
-                except (ValueError, TypeError):
-                    pass
-                if isinstance(val, (int, float)):
-                    expr = re.sub(rf'\b{re.escape(key)}\b', str(val), expr)
-            
-            # Safe evaluation
-            safe_globals = {
-                "__builtins__": {},
-                "math": math,
-                "abs": abs,
-                "round": round,
-                "min": min,
-                "max": max,
-            }
-            result = eval(expr, safe_globals)
-            
-            # Format result nicely
-            if isinstance(result, float):
-                if abs(result) < 0.001:
-                    return f"{result:.2e}"
-                elif result > 100:
-                    return f"{result:.1f}"
-                else:
-                    return f"{result:.4f}"
-            return str(result)
-        except Exception as e:
-            print(f"[FORMULA ERROR] '{formula}' - {e}")
-            return f"<<{formula}>>"
-    
-    return re.sub(pattern, replace_match, text)
-# =================================================
 
 
 class NNGenPrompt(Prompt):
@@ -123,7 +72,7 @@ class NNGenPrompt(Prompt):
                 # for classification tasks: Patch LEMUR's join query before the data call so that dataset_2
                 # and its siblings appear in the result set.
                 if use_join:
-                    patch_join_nn_query()
+                    patch_join_nn_query() # # TODO: Generalize for all scenarios - SQL query implementation in the NN Dataset project
                 data = lemur.data(
                     only_best_accuracy=only_best_accuracy,
                     task=key_dict.get('task'),
@@ -139,7 +88,7 @@ class NNGenPrompt(Prompt):
                 # For classification tasks, enrich the DataFrame with normalised
                 # accuracy and dataset-metadata columns needed for the prompt.
                 if use_join and key_dict.get('output_type') == 'classification':
-                    enrich_dataframe(data)
+                    enrich_dataframe(data)  # TODO: Generalize for all scenarios based on the formula implementation (see evaluate_delimited_formulas(..))
                 print(f"[STAT] Fetched {len(data)} records from STAT table for key: {key}")
             # ==========================================================
 

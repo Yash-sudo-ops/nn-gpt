@@ -112,10 +112,6 @@ class NNGenPrompt(Prompt):
 
             print(f"[DEBUG] Key: {key}, is_pruning: {is_pruning}")
 
-            
-            # Slice to n_training_prompts after the fact instead of relying on LIMIT inside the JOIN.
-            join_cap = 1000
-
             if is_pruning:
                 # Use prun table for pruning statistics
                 data = lemur.prun_data(max_rows=n_training_prompts)
@@ -123,16 +119,17 @@ class NNGenPrompt(Prompt):
                 if 'status' in data.columns:
                     data = data[data['status'] == 'success']
                 print(f"[PRUN] Fetched {len(data)} records from PRUN table for key: {key}")
-            elif use_join:
-                #for classification tasks: Patch LEMUR's join query before the data call so that dataset_2
+            else:
+                # for classification tasks: Patch LEMUR's join query before the data call so that dataset_2
                 # and its siblings appear in the result set.
-                patch_join_nn_query()
+                if use_join:
+                    patch_join_nn_query()
                 data = lemur.data(
                     only_best_accuracy=only_best_accuracy,
                     task=key_dict.get('task'),
                     nn_prefixes=tuple(key_dict.get('nn_prefixes') or []),
-                    max_rows=join_cap,
-                    sql=JoinConf(
+                    max_rows=n_training_prompts,
+                    sql=None if not use_join else JoinConf(
                         num_joint_nns=num_joint_nns,
                         same_columns=tuple(key_dict.get('keep_same', [])),
                         diff_columns=tuple(key_dict.get('no_repeat', [])),
@@ -141,18 +138,8 @@ class NNGenPrompt(Prompt):
                 )
                 # For classification tasks, enrich the DataFrame with normalised
                 # accuracy and dataset-metadata columns needed for the prompt.
-                if key_dict.get('output_type') == 'classification':
+                if use_join and key_dict.get('output_type') == 'classification':
                     enrich_dataframe(data)
-                print(f"[STAT] Fetched {len(data)} records from STAT table for key: {key}")
-            else:
-                # Original behavior for regular tasks (stat table, no JOIN)
-                data = lemur.data(
-                    only_best_accuracy=only_best_accuracy,
-                    task=key_dict.get('task'),
-                    nn_prefixes=tuple(key_dict.get('nn_prefixes') or []),
-                    max_rows=n_training_prompts,
-                    sql=None
-                )
                 print(f"[STAT] Fetched {len(data)} records from STAT table for key: {key}")
             # ==========================================================
 

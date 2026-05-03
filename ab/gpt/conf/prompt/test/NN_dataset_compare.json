@@ -4,7 +4,7 @@
     "system": [
       "You are an expert in deep learning model evaluation.",
       "Given a neural network architecture and performance results on two datasets, determine on which dataset the model achieves higher relative accuracy.",
-      "Respond with only the dataset name — no explanation, no extra text."
+      "Respond with only the dataset name \u2014 no explanation, no extra text."
     ],
     "task": "img-classification",
     "addon_task": "img-classification",
@@ -22,7 +22,6 @@
     "nn_prefixes": [],
     "output_type": "classification",
     "nn_code_max_chars": 2000,
-    "max_new_tokens": 20,
     "input_list": [
       {
         "para": "nn_code",

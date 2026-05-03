@@ -22,7 +22,6 @@
     "nn_prefixes": [],
     "output_type": "classification",
     "nn_code_max_chars": 2000,
-    "max_new_tokens": 20,
     "input_list": [
       {
         "para": "nn_code",

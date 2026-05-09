@@ -157,9 +157,34 @@ def _load_existing_success_result(model_dir_path: Path) -> Optional[Dict[str, An
     }
 
 
+def _validate_full_stat_artifact(model_dir_path: Path, *, save_to_db: bool) -> None:
+    stat_path = model_dir_path / "1.json"
+    if not stat_path.exists():
+        if save_to_db:
+            raise FileNotFoundError(
+                f"Expected full nn-dataset stat artifact at {stat_path}; "
+                "NNEval must not replace it with a slim summary."
+            )
+        return
+
+    try:
+        payload = json.loads(stat_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(f"Invalid stat artifact JSON at {stat_path}: {exc}") from exc
+
+    rows = payload if isinstance(payload, list) else [payload]
+    required = {"uid", "transform", "duration", "accuracy"}
+    if not any(isinstance(row, dict) and required.issubset(row) for row in rows):
+        raise ValueError(
+            f"Stat artifact at {stat_path} is not a full nn-dataset trial JSON; "
+            f"missing required fields {sorted(required)}."
+        )
+
+
 def _write_success_outputs(spec: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
     model_dir_path = Path(spec["model_dir"])
     accuracy = float(result["accuracy"])
+    _validate_full_stat_artifact(model_dir_path, save_to_db=bool(spec.get("save_to_db")))
     eval_info_data = {
         "eval_args": result.get("eval_args", {}),
         "eval_results": {
@@ -178,7 +203,7 @@ def _write_success_outputs(spec: Dict[str, Any], result: Dict[str, Any]) -> Dict
             "transform": spec["prm"].get("transform"),
         },
     }
-    (model_dir_path / "1.json").write_text(
+    (model_dir_path / "eval_summary.json").write_text(
         json.dumps([{"epoch": int(spec["prm"].get("epoch", 1)), "accuracy": accuracy}], indent=2),
         encoding="utf-8",
     )
@@ -473,6 +498,7 @@ def main(
     custom_synth_dir=CUSTOM_SYNTH_DIR,
     cycle=CYCLE,
     use_all_visible_gpus: Optional[bool] = None,
+    use_sequential: bool = True,
 ):
     base_nngpt_path = nngpt_dir
     if nn_alter_epochs is None:
@@ -542,24 +568,82 @@ def main(
                 )
 
                 if requests:
-                    NNEvalWorkerPool.prewarm_nneval_workers(
-                        use_all_visible_gpus=resolved_use_all_visible_gpus,
-                        timeout_seconds=60.0,
-                    )
-                    entries = [{"payload": request} for request in requests]
-                    worker_results = NNEvalWorkerPool.evaluate_model_entries(
-                        entries,
-                        use_all_visible_gpus=resolved_use_all_visible_gpus,
-                    )
-                    for request, worker_result in zip(requests, worker_results):
-                        model_id = request["model_id"]
-                        if worker_result.get("success"):
-                            print(f"  Evaluation results for {model_id}: {worker_result}")
-                            epoch_results.append(_write_success_outputs(request, worker_result))
-                        else:
-                            print(f"  Error evaluating model {model_id}: {worker_result.get('error')}")
-                            epoch_results.append(_write_failure_outputs(request, worker_result))
-                        release_memory()
+                    if use_sequential:
+                        # ── sequential in-process evaluation (old NNEval behavior) ──────
+                        from ab.gpt.util.Eval import Eval
+                        import traceback as tb
+                        import torch, gc
+
+                        for request in requests:
+                            model_id = request["model_id"]
+                            model_dir_path = Path(request["model_dir"])
+                            code_file_path = Path(request["code_file"])
+                            prm = dict(request["prm"])
+                            prm["batch"] = min(int(prm.get("batch", 16)), 16)
+                            print(f"  [MEMORY] Batch size capped at: {prm['batch']}")
+
+                            try:
+                                evaluator = Eval(
+                                    model_source_package=request["model_dir"],
+                                    task=request["task"],
+                                    dataset=request["dataset"],
+                                    metric=request["metric"],
+                                    prm=prm,
+                                    save_to_db=request["save_to_db"],
+                                    prefix=request.get("prefix"),
+                                    save_path=request.get("save_path"),
+                                )
+                                if request.get("epoch_limit_minutes"):
+                                    evaluator.epoch_limit_minutes = request["epoch_limit_minutes"]
+                                else:
+                                    evaluator.epoch_limit_minutes = 8
+
+                                eval_results = evaluator.evaluate(code_file_path)
+                                print(f"  Evaluation results for {model_id}: {eval_results}")
+
+                                result = {
+                                    "success": True,
+                                    "model_id": model_id,
+                                    "accuracy": eval_results[1] if isinstance(eval_results, tuple) else None,
+                                    "checksum": eval_results[0] if isinstance(eval_results, tuple) else None,
+                                    "eval_args": evaluator.get_args(),
+                                    "full_result": str(eval_results),
+                                }
+                                epoch_results.append(_write_success_outputs(request, result))
+
+                            except Exception as e:
+                                error_msg = f"{type(e).__name__}: {e}"
+                                print(f"  Error evaluating model {model_id}: {error_msg}")
+                                with open(model_dir_path / "error.txt", "w+") as f:
+                                    f.write(f"{error_msg}\n\n{tb.format_exc()}")
+                                epoch_results.append(_write_failure_outputs(
+                                    request,
+                                    {"error": error_msg, "traceback": tb.format_exc(), "is_oom": False}
+                                ))
+                            finally:
+                                torch.cuda.empty_cache()
+                                gc.collect()
+                                release_memory()
+                    else:
+                        # ── worker pool evaluation (new NNEval behavior, multi-GPU) ─────
+                        NNEvalWorkerPool.prewarm_nneval_workers(
+                            use_all_visible_gpus=resolved_use_all_visible_gpus,
+                            timeout_seconds=60.0,
+                        )
+                        entries = [{"payload": request} for request in requests]
+                        worker_results = NNEvalWorkerPool.evaluate_model_entries(
+                            entries,
+                            use_all_visible_gpus=resolved_use_all_visible_gpus,
+                        )
+                        for request, worker_result in zip(requests, worker_results):
+                            model_id = request["model_id"]
+                            if worker_result.get("success"):
+                                print(f"  Evaluation results for {model_id}: {worker_result}")
+                                epoch_results.append(_write_success_outputs(request, worker_result))
+                            else:
+                                print(f"  Error evaluating model {model_id}: {worker_result.get('error')}")
+                                epoch_results.append(_write_failure_outputs(request, worker_result))
+                            release_memory()
 
                 # Rebuild cycle_results.json from the artifacts produced in this
                 # epoch directory after all worker results have been written.

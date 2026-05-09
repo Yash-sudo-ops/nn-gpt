@@ -143,6 +143,7 @@ class LoRA:
             # Standard PEFT flow for non-Unsloth models
             self.model = prepare_model_for_kbit_training(self.model)
             self.model.gradient_checkpointing_enable()
+            print("[LoRA] Gradient checkpointing enabled")
             self.peft_model = get_peft_model(self.model, self.peft_config)
         
         self.peft_model._hf_peft_config_loaded = True 
@@ -256,7 +257,7 @@ class LoRA:
             # This ensures sequences are truncated correctly when SFTTrainer tokenizes
             self.tokenizer.truncation_side = "left"
             self.tokenizer.padding_side = "right"
-            self.tokenizer.model_max_length = 4096  # DeepSeek-Coder-7B-Instruct-v1.5 has ~4K context
+            # self.tokenizer.model_max_length = 4096  # DeepSeek-Coder-7B-Instruct-v1.5 has ~4K context
             
             # Suppress sequence length warnings - SFTTrainer will handle truncation correctly
             import warnings
@@ -275,7 +276,7 @@ class LoRA:
                 sft_config = SFTConfig(**self.training_args.to_dict())
                 sft_config.remove_unused_columns = False  # critical when using raw text
                 sft_config.packing = use_packing  # Simple: True, Precise: False
-                sft_config.max_seq_length = 4096  # DeepSeek-Coder-7B-Instruct-v1.5 has ~4K context (4k/4.1k)
+                sft_config.max_seq_length = 8192  # DeepSeek-Coder-7B-Instruct-v1.5 has ~4K context (4k/4.1k)
                 sft_config.dataset_text_field = "text"  # Feed Dataset with {"text": ...} format
                 self.training_args = sft_config
             
@@ -287,7 +288,7 @@ class LoRA:
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
                 args=self.training_args,
-                data_collator=collator  # Simple: DataCollatorForLanguageModeling, Precise: DataCollatorForCompletionOnlyLM
+                #data_collator=collator  # Simple: DataCollatorForLanguageModeling, Precise: DataCollatorForCompletionOnlyLM
                 # packing, max_seq_length, and dataset_text_field are in training_args (SFTConfig)
                 # SFTTrainer will handle truncation based on max_seq_length and tokenizer settings
             )
@@ -358,6 +359,10 @@ class LoRA:
         print("Saving last checkpoint of the model...")
         makedirs(output_dir, exist_ok=True)
         trainer.model.save_pretrained(output_dir, access_token=self.access_token)
+
+        # Always save tokenizer alongside adapter
+        self.tokenizer.save_pretrained(output_dir)
+        print(f"Tokenizer saved to {output_dir}")
 
         # Free memory for merging weights
         # del self.model

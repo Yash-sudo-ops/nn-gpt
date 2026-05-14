@@ -27,7 +27,6 @@ output.log
 stat/
 db/
 path/
-test/
 *.safetensors
 ab/gpt/brute/ga/modular/FracStats/
 ab/gpt/brute/ga/modular/Fractals/

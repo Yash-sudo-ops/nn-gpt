@@ -220,7 +220,7 @@ def nn_gen(
                     code = extract_code(full_out)
 
 
-            if code is None:
+            if use_backbone and code is None:
                 print(f'[ERROR] No code generated for model B{idx}')
                 continue  # Skip if no code is generated at all
 

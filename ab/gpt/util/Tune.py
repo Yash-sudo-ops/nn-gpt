@@ -218,11 +218,9 @@ def nn_gen(
                     code = code.replace(sig_forward, textwrap.indent(textwrap.dedent(forward_code), "    "))
                 else:
                     code = extract_code(full_out)
-
-
-            if use_backbone and code is None:
-                print(f'[ERROR] No code generated for model B{idx}')
-                continue  # Skip if no code is generated at all
+                if code is None:
+                    print(f'[ERROR] No code generated for model B{idx}')
+                    continue  # Skip if no code is generated at all
 
 
             makedirs(model_dir, exist_ok=True)

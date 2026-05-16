@@ -44,7 +44,8 @@ class MultiBranchConvBlock(nn.Module):
 
         # ----- Branch 2 -----
         self.branch2 = nn.Sequential(
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias)
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias),
+        nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias)
         )
 
     def _fix_size(self, x, target):

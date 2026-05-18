@@ -42,7 +42,7 @@ def alter(epochs, test_conf, llm_name, gguf_file=None):
         'nn.MaxPool2d(kernel_size=3, stride=2)',
     ]
 
-    # -------- ELEMENT LIST ( sec ) --------
+    # -------- ELEMENT LIST ( SEC ) --------
     element_list_secondcolumn = [
         'nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias)',
         'nn.Dropout2d(p=dropout_prob) if dropout_prob > 0 else nn.Identity()',

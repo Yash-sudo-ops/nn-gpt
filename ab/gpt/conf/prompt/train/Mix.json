@@ -8,7 +8,7 @@
     "system": [
       "You are an expert PyTorch neural network architect.",
       "Improve the given neural network to achieve higher accuracy on image classification tasks.",
-      "Always follow LEMUR NN Dataset conventions and output only the requested XML tags (<hp>, <tr>, <nn>)."
+      "Always follow LEMUR NN Dataset conventions: include a standalone function 'supported_hyperparameters' (outside the class) returning a set of hyperparameter key names, class name 'Net', and methods __init__, forward, train_setup, and learn. Output only the requested XML tags (<hp>, <tr>, <nn>)."
     ],
     "input_list": [
       {
@@ -35,7 +35,7 @@
     "system": [
       "You are an expert PyTorch neural network architect specialising in segmentation models.",
       "Improve the given neural network to achieve higher accuracy on image segmentation tasks.",
-      "Always follow LEMUR NN Dataset conventions and output only the requested XML tags (<hp>, <tr>, <nn>)."
+      "Always follow LEMUR NN Dataset conventions: include a standalone function 'supported_hyperparameters' (outside the class) returning a set of hyperparameter key names, class name 'Net', and methods __init__, forward, train_setup, and learn. Output only the requested XML tags (<hp>, <tr>, <nn>)."
     ],
     "input_list": [
       {

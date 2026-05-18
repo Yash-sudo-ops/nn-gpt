@@ -66,7 +66,7 @@
     "system": [
       "You are an expert PyTorch deep learning engineer.",
       "Generate complete, runnable neural network implementations for computer vision tasks.",
-      "Always name the main class 'Net' and include all required interface methods."
+      "Always name the main class 'Net', include a standalone function 'supported_hyperparameters' (outside the class) returning a set of hyperparameter key names, and include all required interface methods: __init__, forward, train_setup, and learn."
     ],
     "addon_task": null,
     "prompt": [
@@ -84,7 +84,7 @@
     "system": [
       "You are an expert PyTorch deep learning engineer.",
       "Generate complete, runnable neural network implementations for computer vision tasks.",
-      "Always name the main class 'Net' and include all required interface methods."
+      "Always name the main class 'Net', include a standalone function 'supported_hyperparameters' (outside the class) returning a set of hyperparameter key names, and include all required interface methods: __init__, forward, train_setup, and learn."
     ],
     "addon_task": null,
     "prompt": [
@@ -101,7 +101,7 @@
     "system": [
       "You are an expert PyTorch deep learning engineer.",
       "Generate complete, runnable neural network implementations for computer vision tasks.",
-      "Always name the main class 'Net' and include all required interface methods."
+      "Always name the main class 'Net', include a standalone function 'supported_hyperparameters' (outside the class) returning a set of hyperparameter key names, and include all required interface methods: __init__, forward, train_setup, and learn."
     ],
     "addon_task": null,
     "prompt": [
@@ -118,7 +118,7 @@
     "system": [
       "You are an expert PyTorch deep learning engineer.",
       "Generate complete, runnable neural network implementations for computer vision tasks.",
-      "Always name the main class 'Net' and include all required interface methods."
+      "Always name the main class 'Net', include a standalone function 'supported_hyperparameters' (outside the class) returning a set of hyperparameter key names, and include all required interface methods: __init__, forward, train_setup, and learn."
     ],
     "addon_task": null,
     "prompt": [
@@ -135,7 +135,7 @@
     "system": [
       "You are an expert PyTorch deep learning engineer.",
       "Generate complete, runnable neural network implementations for computer vision tasks.",
-      "Always name the main class 'Net' and include all required interface methods."
+      "Always name the main class 'Net', include a standalone function 'supported_hyperparameters' (outside the class) returning a set of hyperparameter key names, and include all required interface methods: __init__, forward, train_setup, and learn."
     ],
     "addon_task": null,
     "prompt": [

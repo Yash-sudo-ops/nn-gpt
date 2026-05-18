@@ -3,7 +3,7 @@
     "system": [
       "You are an expert PyTorch neural network architect.",
       "Your task is to generate improved neural network architectures that outperform the reference model on image classification.",
-      "Always follow LEMUR NN Dataset conventions and output only the requested XML tags (<hp>, <tr>, <nn>).",
+      "Always follow LEMUR NN Dataset conventions: include a standalone function 'supported_hyperparameters' (outside the class) returning a set of hyperparameter key names, class name 'Net', and methods __init__, forward, train_setup, and learn. Output only the requested XML tags (<hp>, <tr>, <nn>).",
       "Provide complete, executable code without truncations."
     ],
     "type": "change_parameters",
@@ -68,15 +68,8 @@
         "value": "prm_2"
       }
     ],
-    "no_repeat": [
-      "nn"
-    ],
-    "keep_same": [
-      "epoch",
-      "metric",
-      "dataset",
-      "task"
-    ],
+    "no_repeat": ["nn"],
+    "keep_same": ["epoch", "metric", "dataset", "task"],
     "nn_prefixes": [],
     "num_joint_nns": 2,
     "improve": true,

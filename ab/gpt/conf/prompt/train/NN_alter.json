@@ -67,9 +67,7 @@
     ],
     "task": "img-segmentation",
     "addon_task": "img-classification",
-    "no_repeat": [
-      "nn"
-    ],
+    "no_repeat": ["nn"],
     "keep_same": [],
     "prompt": [
       "Improve the following implementation to make it a better performance on image segmentation tasks given another backbone implementation.",

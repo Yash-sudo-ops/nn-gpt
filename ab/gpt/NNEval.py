@@ -158,39 +158,13 @@ def _load_existing_success_result(model_dir_path: Path) -> Optional[Dict[str, An
 
 
 def _validate_full_stat_artifact(model_dir_path: Path, *, save_to_db: bool) -> None:
-    """
-    Validate that Train.py wrote a complete LEMUR stat artifact to 1.json.
-    Required fields: uid, transform, accuracy (duration is optional).
-    If 1.json is missing and save_to_db=True, writes a minimal fallback
-    so copy_to_lemur() can proceed without failing.
-    """
-    import hashlib
     stat_path = model_dir_path / "1.json"
-
     if not stat_path.exists():
         if save_to_db:
-            # Train.py did not write 1.json — build minimal fallback
-            # so copy_to_lemur() can still proceed
-            code_path = model_dir_path / "new_nn.py"
-            uid = hashlib.md5(code_path.read_bytes()).hexdigest() if code_path.exists() else ""
-            hp_path = model_dir_path / "hp.txt"
-            prm = {}
-            if hp_path.exists():
-                try:
-                    prm = json.loads(hp_path.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-            fallback = {
-                "accuracy":  0.0,   # will be overwritten by accuracy from eval_results
-                "batch":     int(prm.get("batch", 16)),
-                "dropout":   float(prm.get("dropout", 0.2)),
-                "lr":        float(prm.get("lr", 0.01)),
-                "momentum":  float(prm.get("momentum", 0.9)),
-                "transform": str(prm.get("transform", "norm_256_flip")),
-                "uid":       uid,
-            }
-            stat_path.write_text(json.dumps([fallback], indent=2), encoding="utf-8")
-            print(f"  [WARN] Train.py did not write 1.json — wrote minimal fallback stat")
+            raise FileNotFoundError(
+                f"Expected full nn-dataset stat artifact at {stat_path}; "
+                "NNEval must not replace it with a slim summary."
+            )
         return
 
     try:
@@ -199,18 +173,12 @@ def _validate_full_stat_artifact(model_dir_path: Path, *, save_to_db: bool) -> N
         raise ValueError(f"Invalid stat artifact JSON at {stat_path}: {exc}") from exc
 
     rows = payload if isinstance(payload, list) else [payload]
-    # duration is optional — Train.py may skip it on time-limit exit path
-    required = {"uid", "transform", "accuracy"}
+    required = {"uid", "transform", "duration", "accuracy"}
     if not any(isinstance(row, dict) and required.issubset(row) for row in rows):
-        # patch missing fields rather than raising — keeps pipeline alive
-        row = rows[0] if rows else {}
-        code_path = model_dir_path / "new_nn.py"
-        if "uid" not in row and code_path.exists():
-            row["uid"] = hashlib.md5(code_path.read_bytes()).hexdigest()
-        if "transform" not in row:
-            row["transform"] = "norm_256_flip"
-        stat_path.write_text(json.dumps([row], indent=2), encoding="utf-8")
-        print(f"  [WARN] Patched incomplete stat artifact at {stat_path}")
+        raise ValueError(
+            f"Stat artifact at {stat_path} is not a full nn-dataset trial JSON; "
+            f"missing required fields {sorted(required)}."
+        )
 
 
 def _write_success_outputs(spec: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
@@ -530,7 +498,6 @@ def main(
     custom_synth_dir=CUSTOM_SYNTH_DIR,
     cycle=CYCLE,
     use_all_visible_gpus: Optional[bool] = None,
-    use_sequential: bool = True,
 ):
     base_nngpt_path = nngpt_dir
     if nn_alter_epochs is None:
@@ -600,82 +567,24 @@ def main(
                 )
 
                 if requests:
-                    if use_sequential:
-                        # ── sequential in-process evaluation (old NNEval behavior) ──────
-                        from ab.gpt.util.Eval import Eval
-                        import traceback as tb
-                        import torch, gc
-
-                        for request in requests:
-                            model_id = request["model_id"]
-                            model_dir_path = Path(request["model_dir"])
-                            code_file_path = Path(request["code_file"])
-                            prm = dict(request["prm"])
-                            prm["batch"] = min(int(prm.get("batch", 16)), 16)
-                            print(f"  [MEMORY] Batch size capped at: {prm['batch']}")
-
-                            try:
-                                evaluator = Eval(
-                                    model_source_package=request["model_dir"],
-                                    task=request["task"],
-                                    dataset=request["dataset"],
-                                    metric=request["metric"],
-                                    prm=prm,
-                                    save_to_db=request["save_to_db"],
-                                    prefix=request.get("prefix"),
-                                    save_path=request.get("save_path"),
-                                )
-                                if request.get("epoch_limit_minutes"):
-                                    evaluator.epoch_limit_minutes = request["epoch_limit_minutes"]
-                                else:
-                                    evaluator.epoch_limit_minutes = 8
-
-                                eval_results = evaluator.evaluate(code_file_path)
-                                print(f"  Evaluation results for {model_id}: {eval_results}")
-
-                                result = {
-                                    "success": True,
-                                    "model_id": model_id,
-                                    "accuracy": eval_results[1] if isinstance(eval_results, tuple) else None,
-                                    "checksum": eval_results[0] if isinstance(eval_results, tuple) else None,
-                                    "eval_args": evaluator.get_args(),
-                                    "full_result": str(eval_results),
-                                }
-                                epoch_results.append(_write_success_outputs(request, result))
-
-                            except Exception as e:
-                                error_msg = f"{type(e).__name__}: {e}"
-                                print(f"  Error evaluating model {model_id}: {error_msg}")
-                                with open(model_dir_path / "error.txt", "w+") as f:
-                                    f.write(f"{error_msg}\n\n{tb.format_exc()}")
-                                epoch_results.append(_write_failure_outputs(
-                                    request,
-                                    {"error": error_msg, "traceback": tb.format_exc(), "is_oom": False}
-                                ))
-                            finally:
-                                torch.cuda.empty_cache()
-                                gc.collect()
-                                release_memory()
-                    else:
-                        # ── worker pool evaluation (new NNEval behavior, multi-GPU) ─────
-                        NNEvalWorkerPool.prewarm_nneval_workers(
-                            use_all_visible_gpus=resolved_use_all_visible_gpus,
-                            timeout_seconds=60.0,
-                        )
-                        entries = [{"payload": request} for request in requests]
-                        worker_results = NNEvalWorkerPool.evaluate_model_entries(
-                            entries,
-                            use_all_visible_gpus=resolved_use_all_visible_gpus,
-                        )
-                        for request, worker_result in zip(requests, worker_results):
-                            model_id = request["model_id"]
-                            if worker_result.get("success"):
-                                print(f"  Evaluation results for {model_id}: {worker_result}")
-                                epoch_results.append(_write_success_outputs(request, worker_result))
-                            else:
-                                print(f"  Error evaluating model {model_id}: {worker_result.get('error')}")
-                                epoch_results.append(_write_failure_outputs(request, worker_result))
-                            release_memory()
+                    NNEvalWorkerPool.prewarm_nneval_workers(
+                        use_all_visible_gpus=resolved_use_all_visible_gpus,
+                        timeout_seconds=60.0,
+                    )
+                    entries = [{"payload": request} for request in requests]
+                    worker_results = NNEvalWorkerPool.evaluate_model_entries(
+                        entries,
+                        use_all_visible_gpus=resolved_use_all_visible_gpus,
+                    )
+                    for request, worker_result in zip(requests, worker_results):
+                        model_id = request["model_id"]
+                        if worker_result.get("success"):
+                            print(f"  Evaluation results for {model_id}: {worker_result}")
+                            epoch_results.append(_write_success_outputs(request, worker_result))
+                        else:
+                            print(f"  Error evaluating model {model_id}: {worker_result.get('error')}")
+                            epoch_results.append(_write_failure_outputs(request, worker_result))
+                        release_memory()
 
                 # Rebuild cycle_results.json from the artifacts produced in this
                 # epoch directory after all worker results have been written.

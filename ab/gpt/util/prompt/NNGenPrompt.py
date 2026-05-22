@@ -71,7 +71,9 @@ class NNGenPrompt(Prompt):
             else:
                 # for classification tasks: Patch LEMUR's join query before the data call so that dataset_2
                 # and its siblings appear in the result set.
-                if use_join:
+
+                classification = use_join and key_dict.get('output_type') == 'classification'
+                if classification:
                     patch_join_nn_query() # # TODO: Generalize for all scenarios - SQL query implementation in the NN Dataset project
                 data = lemur.data(
                     only_best_accuracy=only_best_accuracy,
@@ -87,7 +89,7 @@ class NNGenPrompt(Prompt):
                 )
                 # For classification tasks, enrich the DataFrame with normalised
                 # accuracy and dataset-metadata columns needed for the prompt.
-                if use_join and key_dict.get('output_type') == 'classification':
+                if classification:
                     enrich_dataframe(data)  # TODO: Generalize for all scenarios based on the formula implementation (see evaluate_delimited_formulas(..))
                 print(f"[STAT] Fetched {len(data)} records from STAT table for key: {key}")
             # ==========================================================

@@ -191,7 +191,8 @@ class NNGenPrompt(Prompt):
                 # ========== PRINT FOR VERIFICATION (AFTER response EXISTS) ==========
                 if len(dataframe) < 10:
                     print(f"\n[EXAMPLE {len(dataframe)+1}]:")
-                    print(f"INPUT: {inst[:1000]}...")
+                    print(f"SYS: {system_text}")
+                    print(f"USER: {inst[:1000]}...")
                     print(f"OUTPUT: {response[:500]}...")
                     print("-" * 50)
                 # ================================================================

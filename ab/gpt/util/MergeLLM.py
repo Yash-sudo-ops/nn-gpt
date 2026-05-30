@@ -104,7 +104,7 @@ def find_adapter(epoch: int):
     """Find adapter for epoch (with fallback to earlier epochs)"""
     print(f"\n[ADAPTER] Searching for epoch {epoch}...")
 
-    for e in range(epoch, -1, -1):
+    for e in [epoch]:
         path = nngpt_dir / "llm" / "epoch" / f"A{e}"
         if not path.exists():
             continue
@@ -187,7 +187,8 @@ def merge_multiple_adapters(base_model, adapter_paths, output_path):
             model,
             str(adapter_path),
             is_trainable=False,
-            device_map="auto"
+            device_map="auto",
+            offload_folder=str(offload_dir)
         )
 
         print("[MERGE] → merging...")
@@ -205,7 +206,7 @@ def merge_multiple_adapters(base_model, adapter_paths, output_path):
     model.save_pretrained(output_path)
 
     print("[MERGE] Saving tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(str(adapter_paths[-1]), trust_remote_code=True)
     tokenizer.save_pretrained(output_path)
 
     # --- Cleanup offload directory ---
@@ -246,6 +247,7 @@ def rebuild_from_lineage():
     for entry in tracker_list:
         epoch = entry.get("epoch")
         acc = entry.get("accuracy")
+        score = entry.get("score")  # success_rate × accuracy
 
         if epoch is None:
             continue
@@ -256,22 +258,24 @@ def rebuild_from_lineage():
             #acc = min(0.40 + epoch * 0.03, 0.99)  # Fake for testing
             #print(f"[EPOCH {epoch}] Using fake accuracy: {acc:.4f}")
 
-        acc = float(acc)
-        valid_epochs.append((epoch, acc))
-        print(f"[EPOCH {epoch}] Accuracy: {acc:.4f}")
+        sort_key = float(score) if score else float(acc)
+        valid_epochs.append((epoch, float(acc), sort_key))
+        print(f"[EPOCH {epoch}] Accuracy: {acc:.4f}  Score: {sort_key:.4f}")
 
     if not valid_epochs:
         print("\n[ERROR] No valid epochs")
         return
 
     # Pick best
-    valid_epochs.sort(key=lambda x: x[1], reverse=True)
-    best_epoch, best_acc = valid_epochs[0]
+    valid_epochs.sort(key=lambda x: x[2], reverse=True)
+    best_epoch, best_acc, best_score = valid_epochs[0]
+    print(f"\n[SELECTION] Best epoch: {best_epoch}, "
+          f"Accuracy: {best_acc:.4f}, Score: {best_score:.4f}")
 
     print(f"\n[SELECTION] Best epoch: {best_epoch}, Accuracy: {best_acc:.4f}")
 
     # Find adapter
-    adapter_path, used_epoch = find_adapter(best_epoch - 1)
+    adapter_path, used_epoch = find_adapter(best_epoch)
     if adapter_path is None:
         print(f"[ERROR] No adapter for epoch {best_epoch}")
         return

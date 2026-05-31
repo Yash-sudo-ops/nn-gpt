@@ -170,7 +170,8 @@ The original version of this project was created at the Computer Vision Laborato
 	booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision Workshops (ICCVW)},
 	url={https://openaccess.thecvf.com/content/ICCV2025W/AIM/papers/Kochnev_Optuna_vs_Code_Llama_Are_LLMs_a_New_Paradigm_for_ICCVW_2025_paper.pdf},
 	pages = {5664--5674},
-	year={2025}
+	year={2025},
+	doi={10.1109/ICCVW69036.2025.00598}
 }
 
 @Article{ABrain.DeltaNAS,

@@ -160,8 +160,8 @@ The original version of this project was created at the Computer Vision Laborato
 	title={From Memorization to Creativity: {LLM} as a Designer of Novel Neural Architectures},
 	author={Khalid, Waleed and Ignatov, Dmitry and Timofte, Radu},
 	booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops (CVPRW)},	
-	year={2026},
-    note={to appear}
+	pages = {3252--3261},	
+	year={2026}
 }
 
 @InProceedings{ABrain.HPGPT,

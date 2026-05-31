@@ -151,9 +151,9 @@ The original version of this project was created at the Computer Vision Laborato
 @InProceedings{ABrain.NNGPT,
 	title = {{NNGPT}: Rethinking {AutoML} with Large Language Models},
 	author = {Kochnev, Roman and Khalid, Waleed and Uzun, Tolgay Atinc and Zhang, Xi and Dhameliya, Yashkumar Sanjaybhai and Qin, Furui and Vysyaraju, Chandini and Duvvuri, Raghuvir and Goyal, Avi and Ignatov, Dmitry and Timofte, Radu},
-	booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops (CVPRW)},	
-	year={2026},
-    note={to appear}
+	booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops (CVPRW)},		
+	pages = {5664--5674},	
+	year={2026}
 }
 
 @InProceedings{ABrain.Architect,

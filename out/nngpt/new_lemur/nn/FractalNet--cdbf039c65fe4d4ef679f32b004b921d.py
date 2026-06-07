@@ -56,6 +56,7 @@ class MultiBranchConvBlock(nn.Module):
 
         self.in_pr = (nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False) if in_channels != out_channels else nn.Identity())
         self.element_list = element_list  # [BUG 2 FIX] 
+        self.dropout_prob = dropout_prob  # [BUG C FIX] 
 
         # ----- Branch 1 -----
         self.branch1 = nn.Sequential(
@@ -89,6 +90,7 @@ class SecondColumnBlock(nn.Module):
 
         self.in_pr = (nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False) if in_channels != out_channels else nn.Identity())
         self.element_list = element_list  # [BUG 2 FIX] 
+        self.dropout_prob = dropout_prob  # [BUG C FIX]
 
         self.main = nn.Sequential(
             nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias)
@@ -122,9 +124,9 @@ class FractalBlock(nn.Module):
             for j in range(self.num_columns):
                 if (i + 1) % (2 ** j) == 0:
                     in_ch_ij = in_channels if (i + 1 == 2 ** j) else out_channels
-                    block_type = 1  # [BUG 4 FIX] 
+                    block_type = 0  # [BUG 4 FIX] 
                     level.append(
-                        drop_conv3x3_block(in_ch_ij,out_channels,stride=1,padding=1,bias=False,dropout_prob=dropout_prob,element_list=self.element_list,block_type=block_type)  # [BUG 2 FIX] pass element_list instead of None
+                        drop_conv3x3_block(in_ch_ij,out_channels,stride=1,padding=1,bias=False,dropout_prob=dropout_prob,element_list=self.element_list,block_type=block_type)  # [BUG 2 FIX] 
                     )
                 else:
                     level.append(nn.Identity())
@@ -172,7 +174,7 @@ class FractalBlock(nn.Module):
 # Fractal Unit
 # -------------------------------------------------
 class FractalUnit(nn.Module):
-    def __init__(self, in_channels, out_channels, num_columns, loc_drop_prob, dropout_prob, glob_drop_ratio=0.5, element_list=None):  # [BUG 1 FIX]  | [BUG 2 FIX] 
+    def __init__(self, in_channels, out_channels, num_columns, loc_drop_prob, dropout_prob, glob_drop_ratio=0.5, element_list=None):  # [BUG 1 FIX] | [BUG 2 FIX] 
         super().__init__()
         self.block = FractalBlock(
             in_channels, out_channels, num_columns,
@@ -197,8 +199,8 @@ class Net(nn.Module):
     def __init__(self, in_shape, out_shape, prm, device):
         super().__init__()
         self.device = device
-        self.glob_drop_ratio = 0.5   # [BUG 1 FIX] 
-        self.loc_drop_prob = 0.15    # [BUG 1 FIX] 
+        self.glob_drop_ratio = 0.5   # [BUG 1 FIX]
+        self.loc_drop_prob = 0.15    # [BUG 1 FIX]
         self.use_amp = False
         self.use_checkpoint = False
 
@@ -309,10 +311,15 @@ class Net(nn.Module):
             self.to(x.device)
 
         x = x.to(torch.float32)
+        B = x.shape[0]           # [BUG F FIX] 
+        was_5d = x.dim() == 5    # [BUG F FIX]
         x = self._norm4d(x)
         x = self.features(x)
         x = torch.flatten(x, 1)
-        return self.output(x)
+        x = self.output(x)
+        if was_5d:
+            x = x.view(B, -1, x.shape[-1])  # [BUG F FIX]
+        return x
 
     # ---------- training setup ----------
     def train_setup(self, prm):
@@ -327,6 +334,8 @@ class Net(nn.Module):
 
     # ---------- learning loop ----------
     def learn(self, train_data):
+        if not hasattr(self, 'criterion') or not hasattr(self, 'optimizer'):  # [BUG G FIX]
+            raise RuntimeError("train_setup() must be called before learn()")
         self.train()
         scaler = self._scaler
         train_iter = iter(train_data)

@@ -153,7 +153,11 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          min_selected_k=15, fallback_threshold=0.35, adaptive_threshold=False,
          novelty_check=True, resume_from_cycle=None, max_retries=3, use_optimized_training=True,
          use_agents=USE_AGENTS, use_predictor=USE_PREDICTOR, use_backbone=False,
-         classification_mode=False):
+         classification_mode=False,
+         mobile_deploy=False, mobile_input_size=32, mobile_max_params=500_000,
+         mobile_export_tflite=True, mobile_bench_desktop=True, benchmark_android=False,
+         skip_finetuning=False, generation_model=None, force_regenerate=False,
+         skip_data_augment=False):
     persist_llm_conf(llm_conf, enable_merge)
     # --- Pipeline mode intercept ---
     if run_iterative_pipeline:
@@ -173,6 +177,16 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
             max_retries=max_retries,
             use_optimized_training=use_optimized_training,
             num_train_epochs=num_train_epochs,
+            mobile_deploy=mobile_deploy,
+            mobile_input_size=mobile_input_size,
+            mobile_max_params=mobile_max_params,
+            mobile_export_tflite=mobile_export_tflite,
+            mobile_bench_desktop=mobile_bench_desktop,
+            benchmark_android=benchmark_android,
+            skip_finetuning=skip_finetuning,
+            generation_model=generation_model,
+            force_regenerate=force_regenerate,
+            skip_data_augment=skip_data_augment,
         )
         pipeline.run()
         return  # Skip standalone training
@@ -562,6 +576,28 @@ if __name__ == '__main__':
                         help='Enable LangGraph multi-agent workflow (default: False).')
     parser.add_argument('--use_predictor', action='store_true', default=USE_PREDICTOR,
                         help='Enable predictor agent (requires --use_agents) (default: False).')
+
+    parser.add_argument('--mobile_deploy', action='store_true', default=False,
+                        help='[Pipeline] Separate mobile track: mobile prompts + TFLite export after eval')
+    parser.add_argument('--mobile_input_size', type=int, default=32,
+                        help='[Pipeline] Default input size for mobile TFLite export')
+    parser.add_argument('--mobile_max_params', type=int, default=500_000,
+                        help='[Pipeline] Skip mobile export above this parameter count')
+    parser.set_defaults(mobile_export_tflite=True, mobile_bench_desktop=True)
+    parser.add_argument('--no_mobile_tflite', dest='mobile_export_tflite', action='store_false',
+                        help='[Pipeline] Mobile track: skip TFLite conversion')
+    parser.add_argument('--no_mobile_bench', dest='mobile_bench_desktop', action='store_false',
+                        help='[Pipeline] Mobile track: skip desktop TFLite CPU benchmark')
+    parser.add_argument('--benchmark_android', action='store_true', default=False,
+                        help='[Pipeline] Benchmark TFLite on Android via ADB when device attached')
+    parser.add_argument('--skip_finetuning', action='store_true', default=False,
+                        help='[Pipeline] Skip LoRA; generate with base model (quick mobile test)')
+    parser.add_argument('--generation_model', type=str, default=None,
+                        help='[Pipeline] Model path/HF id for generation when --skip_finetuning')
+    parser.add_argument('--force_regenerate', action='store_true', default=False,
+                        help='[Pipeline] Regenerate models even if cycle_X/generation exists')
+    parser.add_argument('--skip_data_augment', action='store_true', default=False,
+                        help='[Pipeline] Skip training-data augment after eval (faster smoke test)')
 
     args = parser.parse_args()
 

@@ -268,6 +268,7 @@ def _build_eval_request(
     prefix_for_db: Optional[str],
     epoch_limit_minutes: Optional[int],
     lemur_prefix: Optional[str],
+    save_pth_weights: bool = False,
 ) -> Dict[str, Any]:
     return {
         "model_id": str(model_id),
@@ -283,7 +284,16 @@ def _build_eval_request(
         "epoch_limit_minutes": epoch_limit_minutes,
         "lemur_prefix": lemur_prefix,
         "use_ast_validation": None,
+        "save_pth_weights": bool(save_pth_weights),
     }
+
+
+def _model_display_path(path: Path, base: Path) -> str:
+    """Human-readable path for logs; works for out/nngpt and iterative nneval dirs."""
+    try:
+        return str(path.resolve().relative_to(base.resolve()))
+    except ValueError:
+        return str(path.resolve())
 
 
 def _collect_epoch_requests(
@@ -317,10 +327,11 @@ def _collect_epoch_requests(
     patch_size: float,
     prm_json: Optional[Dict[str, Any]],
     epoch_limit_minutes: Optional[int],
+    save_pth_weights: bool = False,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     requests: List[Dict[str, Any]] = []
     immediate_results: List[Dict[str, Any]] = []
-    base_nngpt_path = nngpt_dir
+    display_base = models_base_dir.resolve()
 
     for model_id in sorted(os.listdir(models_base_dir)):
         model_dir_path = models_base_dir / model_id
@@ -337,13 +348,13 @@ def _collect_epoch_requests(
         existing_result = _load_existing_success_result(model_dir_path)
         if existing_result is not None:
             print(
-                f"  [SKIP] {model_dir_path.relative_to(base_nngpt_path)} already evaluated "
+                f"  [SKIP] {_model_display_path(model_dir_path, display_base)} already evaluated "
                 f"({existing_result['accuracy'] * 100:.2f}%)"
             )
             immediate_results.append(existing_result)
             continue
 
-        print(f"\n--- Evaluating Model: {model_dir_path.relative_to(base_nngpt_path)} ---")
+        print(f"\n--- Evaluating Model: {_model_display_path(model_dir_path, display_base)} ---")
         if not verify_nn_code(model_dir_path, code_file_path):
             print(f"Code verification failed for {code_file_path}. Skipping evaluation.")
             (model_dir_path / "eval_verification_failed.txt").write_text(
@@ -458,6 +469,7 @@ def _collect_epoch_requests(
                 prefix_for_db=prefix_for_db,
                 epoch_limit_minutes=epoch_limit_minutes,
                 lemur_prefix=nn_name_prefix or orig_pref,
+                save_pth_weights=save_pth_weights,
             )
         )
 
@@ -498,6 +510,7 @@ def main(
     custom_synth_dir=CUSTOM_SYNTH_DIR,
     cycle=CYCLE,
     use_all_visible_gpus: Optional[bool] = None,
+    save_pth_weights: bool = False,
 ):
     base_nngpt_path = nngpt_dir
     if nn_alter_epochs is None:
@@ -564,6 +577,7 @@ def main(
                     patch_size=patch_size,
                     prm_json=prm_json,
                     epoch_limit_minutes=epoch_limit_minutes,
+                    save_pth_weights=save_pth_weights,
                 )
 
                 if requests:

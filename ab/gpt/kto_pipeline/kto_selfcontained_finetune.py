@@ -67,6 +67,16 @@ class SelfContainedKTOPipeline:
         undesirable_ratio: float = 1.0,
         max_undesirable_total: int = 1000,
         min_train_examples: int = 10,
+        # curriculum threshold (#1): "fixed" = flat bar; "quantile" = max(floor,
+        # q-percentile of the cycle's accuracies); "linear" = floor + slope*cycle.
+        threshold_mode: str = "fixed",
+        threshold_quantile: float = 0.6,
+        threshold_ceil: float = 0.62,
+        threshold_slope: float = 0.01,
+        # dynamic class weights (#2): "auto" sets undesirable_weight so that
+        # desirable_weight*n_D ~= class_weight_target * undesirable_weight*n_U.
+        class_weight_mode: str = "fixed",
+        class_weight_target: float = 1.0,
         # KTO hyperparameters
         kto_beta: float = 0.1,
         kto_desirable_weight: float = 1.0,
@@ -119,6 +129,13 @@ class SelfContainedKTOPipeline:
         self.undesirable_ratio = undesirable_ratio
         self.max_undesirable_total = max_undesirable_total
         self.min_train_examples = min_train_examples
+
+        self.threshold_mode = threshold_mode
+        self.threshold_quantile = threshold_quantile
+        self.threshold_ceil = threshold_ceil
+        self.threshold_slope = threshold_slope
+        self.class_weight_mode = class_weight_mode
+        self.class_weight_target = class_weight_target
 
         self.kto_beta = kto_beta
         self.kto_desirable_weight = kto_desirable_weight
@@ -184,6 +201,8 @@ class SelfContainedKTOPipeline:
         logger.info(f"Desirable weight     : {self.kto_desirable_weight}")
         logger.info(f"Undesirable weight   : {self.kto_undesirable_weight}")
         logger.info(f"Undesirable ratio    : {self.undesirable_ratio}")
+        logger.info(f"Threshold mode       : {self.threshold_mode}")
+        logger.info(f"Class weight mode    : {self.class_weight_mode}")
         logger.info(f"Starting desirable   : {len(self.desirable)}")
         logger.info(f"Starting undesirable : {len(self.undesirable)}")
         logger.info("=" * 80)
@@ -231,6 +250,39 @@ class SelfContainedKTOPipeline:
                 torch.cuda.empty_cache()
         except Exception:  # noqa: BLE001 — cleanup is best-effort
             pass
+
+    @staticmethod
+    def _percentile(values: List[float], q: float) -> float:
+        if not values:
+            return 0.0
+        s = sorted(values)
+        if len(s) == 1:
+            return s[0]
+        pos = max(0.0, min(1.0, q)) * (len(s) - 1)
+        lo, hi = math.floor(pos), math.ceil(pos)
+        if lo == hi:
+            return s[int(lo)]
+        return s[int(lo)] + (s[int(hi)] - s[int(lo)]) * (pos - lo)
+
+    def _effective_threshold(self, cycle: int, cycle_accs: List[float]) -> float:
+        """Curriculum bar: floor for "fixed"; rising for "quantile"/"linear"."""
+        floor = self.accuracy_threshold
+        if self.threshold_mode == "quantile" and cycle_accs:
+            return min(max(floor, self._percentile(cycle_accs, self.threshold_quantile)),
+                       self.threshold_ceil)
+        if self.threshold_mode == "linear":
+            return min(floor + self.threshold_slope * max(0, cycle - 1), self.threshold_ceil)
+        return floor
+
+    def _class_weights(self, ds_stats: Dict[str, Any]) -> Tuple[float, float]:
+        """KTO imbalance rule: balance desirable_weight*n_D vs undesirable_weight*n_U."""
+        dw, uw = self.kto_desirable_weight, self.kto_undesirable_weight
+        if self.class_weight_mode == "auto":
+            n_d = max(1, int(ds_stats.get("desirable_used", 0)))
+            n_u = max(1, int(ds_stats.get("undesirable_used", 0)))
+            uw = (dw * n_d) / (max(1e-6, self.class_weight_target) * n_u)
+            uw = min(10.0, max(0.1, uw))
+        return dw, uw
 
     def _cycle_dir(self, cycle: int) -> Path:
         d = self.output_dir / f"cycle_{cycle}"
@@ -404,6 +456,15 @@ class SelfContainedKTOPipeline:
                 },
             })
 
+        cycle_accs: List[float] = []
+        for ev in eval_by_id.values():
+            if ev.get("success") and ev.get("accuracy") is not None:
+                try:
+                    cycle_accs.append(float(ev.get("accuracy")))
+                except (TypeError, ValueError):
+                    pass
+        eff_threshold = self._effective_threshold(cycle, cycle_accs)
+
         for rec in generation_records:
             model_id = rec.get("model_id")
             model_dir = nneval_dir / model_id
@@ -455,7 +516,7 @@ class SelfContainedKTOPipeline:
                 accuracy = 0.0
             accuracies.append(accuracy)
 
-            if accuracy < self.accuracy_threshold:
+            if accuracy < eff_threshold:
                 add_undesirable(_fenced(code), model_id, "low_accuracy", accuracy)
                 n_und_lowacc += 1
                 continue
@@ -495,6 +556,7 @@ class SelfContainedKTOPipeline:
             "evaluated_accuracies": len(accuracies),
             "best_accuracy": best_acc,
             "avg_accuracy": avg_acc,
+            "effective_threshold": eff_threshold,
             "desirable_total": len(self.desirable),
             "undesirable_total": len(self.undesirable),
         }
@@ -509,6 +571,7 @@ class SelfContainedKTOPipeline:
         logger.info(f"      unparseable          : {n_und_unparseable}")
         logger.info(f"  skipped (no signal)      : {n_skipped}")
         logger.info(f"  best/avg acc this cycle  : {best_acc*100:.2f}% / {avg_acc*100:.2f}%")
+        logger.info(f"  effective threshold      : {eff_threshold*100:.2f}% ({self.threshold_mode})")
         logger.info(f"  cumulative desirable     : {len(self.desirable)}")
         logger.info(f"  cumulative undesirable   : {len(self.undesirable)}")
         return stats
@@ -567,11 +630,18 @@ class SelfContainedKTOPipeline:
 
     # ── stage 5: KTO fine-tune ──────────────────────────────────────────────────
 
-    def run_kto_training(self, cycle: int, kto_file: Path) -> Dict[str, Any]:
+    def run_kto_training(self, cycle: int, kto_file: Path,
+                         desirable_weight: Optional[float] = None,
+                         undesirable_weight: Optional[float] = None) -> Dict[str, Any]:
         logger.info("")
         logger.info("=" * 80)
         logger.info(f"CYCLE {cycle}: KTO FINE-TUNING")
         logger.info("=" * 80)
+
+        dw = desirable_weight if desirable_weight is not None else self.kto_desirable_weight
+        uw = undesirable_weight if undesirable_weight is not None else self.kto_undesirable_weight
+        logger.info(f"[cycle {cycle}] class weights: desirable={dw:.3f}, undesirable={uw:.3f} "
+                    f"({self.class_weight_mode})")
 
         checkpoint_dir = self._checkpoint_dir(cycle)
         if checkpoint_dir.exists() and (checkpoint_dir / "adapter_config.json").exists():
@@ -586,8 +656,8 @@ class SelfContainedKTOPipeline:
             "--kto_data_file", str(kto_file),
             "--kto_checkpoint_dir", str(checkpoint_dir),
             "--kto_beta", str(self.kto_beta),
-            "--kto_desirable_weight", str(self.kto_desirable_weight),
-            "--kto_undesirable_weight", str(self.kto_undesirable_weight),
+            "--kto_desirable_weight", str(dw),
+            "--kto_undesirable_weight", str(uw),
             "--num_train_epochs", str(self.num_train_epochs),
             "--max_prompt_length", str(self.kto_max_prompt_length),
             "--max_completion_length", str(self.kto_max_completion_length),
@@ -618,7 +688,8 @@ class SelfContainedKTOPipeline:
 
         logger.info(f"[cycle {cycle}] KTO training complete in {minutes:.1f} min → {checkpoint_dir}")
         return {"success": True, "checkpoint_dir": str(checkpoint_dir),
-                "training_time_minutes": minutes}
+                "training_time_minutes": minutes,
+                "desirable_weight": dw, "undesirable_weight": uw}
 
     # ── orchestration ───────────────────────────────────────────────────────────
 
@@ -638,7 +709,8 @@ class SelfContainedKTOPipeline:
         kto_file, ds_stats = self.build_kto_dataset(cycle)
 
         if kto_file is not None:
-            train_stats = self.run_kto_training(cycle, kto_file)
+            dw, uw = self._class_weights(ds_stats)
+            train_stats = self.run_kto_training(cycle, kto_file, dw, uw)
         else:
             train_stats = {"success": False, "skipped": True, "reason": "insufficient_data"}
 
@@ -729,6 +801,17 @@ def main() -> None:
     parser.add_argument("--max_undesirable_total", type=int, default=1000)
     parser.add_argument("--min_train_examples", type=int, default=10)
 
+    # curriculum threshold (#1)
+    parser.add_argument("--threshold_mode", type=str, default="fixed",
+                        choices=["fixed", "quantile", "linear"])
+    parser.add_argument("--threshold_quantile", type=float, default=0.6)
+    parser.add_argument("--threshold_ceil", type=float, default=0.62)
+    parser.add_argument("--threshold_slope", type=float, default=0.01)
+    # dynamic class weights (#2)
+    parser.add_argument("--class_weight_mode", type=str, default="fixed",
+                        choices=["fixed", "auto"])
+    parser.add_argument("--class_weight_target", type=float, default=1.0)
+
     parser.add_argument("--kto_beta", type=float, default=0.1)
     parser.add_argument("--kto_desirable_weight", type=float, default=1.0)
     parser.add_argument("--kto_undesirable_weight", type=float, default=1.0)
@@ -776,6 +859,12 @@ def main() -> None:
         undesirable_ratio=args.undesirable_ratio,
         max_undesirable_total=args.max_undesirable_total,
         min_train_examples=args.min_train_examples,
+        threshold_mode=args.threshold_mode,
+        threshold_quantile=args.threshold_quantile,
+        threshold_ceil=args.threshold_ceil,
+        threshold_slope=args.threshold_slope,
+        class_weight_mode=args.class_weight_mode,
+        class_weight_target=args.class_weight_target,
         kto_beta=args.kto_beta,
         kto_desirable_weight=args.kto_desirable_weight,
         kto_undesirable_weight=args.kto_undesirable_weight,

@@ -26,8 +26,8 @@ import inspect
 from pathlib import Path
 from typing import Optional
 
-import torch
 from ab.nn.util.Util import release_memory
+from ab.gpt.util.LoRA import find_all_linear_names, print_trainable_parameters
 import ab.gpt.util.training_runtime as TrainingRuntime
 from datasets import Dataset
 from peft import (
@@ -51,51 +51,16 @@ except ImportError as e:
     )
 
 
-def find_all_linear_names(model):
-    cls = torch.nn.modules.linear.Linear
-    lora_module_names = set()
-    for name, module in model.named_modules():
-        if isinstance(module, cls):
-            names = name.split('.')
-            lora_module_names.add(names[0] if len(names) == 1 else names[-1])
-
-    if 'lm_head' in lora_module_names:  # needed for 16-bit
-        lora_module_names.remove('lm_head')
-    return list(lora_module_names)
-
-
-def print_trainable_parameters(model, use_4bit=False):
-    """Print the number of trainable parameters in the model."""
-    trainable_params = 0
-    all_param = 0
-    for _, param in model.named_parameters():
-        num_params = param.numel()
-        # if using DS Zero 3 and the weights are initialized empty
-        if num_params == 0 and hasattr(param, "ds_numel"):
-            num_params = param.ds_numel
-
-        all_param += num_params
-        if param.requires_grad:
-            trainable_params += num_params
-    if use_4bit:
-        trainable_params /= 2
-    print(
-        f"all params: {all_param:,d} || trainable params: {trainable_params:,d} || "
-        f"trainable%: {100 * trainable_params / all_param}"
+def kto_lora_config(target_modules, r=16, lora_alpha=16, lora_dropout=0.05,
+                    bias="none", task_type="CAUSAL_LM", layers_to_transform=None):
+    """LoRA config for KTO — lower-rank defaults than SFT for drift control."""
+    kwargs = dict(
+        r=r, lora_alpha=lora_alpha, target_modules=list(target_modules),
+        lora_dropout=lora_dropout, bias=bias, task_type=task_type,
     )
-
-
-def create_peft_config(modules):
-    """Create Parameter-Efficient Fine-Tuning config for KTO."""
-    return LoraConfig(
-        r=32,
-        lora_alpha=64,
-        target_modules=modules,
-        lora_dropout=0.1,
-        bias="none",
-        task_type="CAUSAL_LM",
-        use_dora=True,
-    )
+    if layers_to_transform is not None:
+        kwargs["layers_to_transform"] = list(layers_to_transform)
+    return LoraConfig(**kwargs)
 
 
 class KTO:
@@ -121,8 +86,7 @@ class KTO:
         self._use_unsloth = use_unsloth
 
         if peft_config is None:
-            modules = find_all_linear_names(self.model)
-            self.peft_config = create_peft_config(modules)
+            self.peft_config = kto_lora_config(find_all_linear_names(self.model))
         else:
             self.peft_config = peft_config
 

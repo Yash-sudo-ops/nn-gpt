@@ -285,7 +285,7 @@ def _seed_everything(seed: int) -> None:
 
 def load_model_and_tokenizer(base_model: str, adapter: Optional[str], context_length: int):
     """Load the base NNGPT model in 4-bit, optionally with a prior LoRA adapter."""
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from ab.gpt.util.LLM import LLM
 
     access_token = (
         os.environ.get("HF_TOKEN")
@@ -293,22 +293,19 @@ def load_model_and_tokenizer(base_model: str, adapter: Optional[str], context_le
         or None
     )
 
-    print(f"[GEN] Loading tokenizer: {base_model}")
-    tokenizer = AutoTokenizer.from_pretrained(
-        base_model, trust_remote_code=True, token=access_token
+    # Reuse the repo's loader (4-bit + bfloat16 + tokenizer caching). Generation
+    # always tokenizes with add_special_tokens=False, so LLM's add_eos_token has
+    # no effect here, and single-sequence generation is unaffected by padding_side.
+    print(f"[GEN] Loading base model in 4-bit via LLM: {base_model}")
+    loader = LLM(
+        base_model,
+        quantization_config_4bit,
+        access_token=access_token,
+        context_length=context_length,
     )
+    model, tokenizer = loader.get_model(), loader.get_tokenizer()
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token = tokenizer.eos_token
-
-    print(f"[GEN] Loading base model in 4-bit: {base_model}")
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        quantization_config=quantization_config_4bit,
-        device_map="auto",
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True,
-        token=access_token,
-    )
 
     if adapter:
         adapter_path = Path(adapter)

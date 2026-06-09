@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional
 
 import torch
 from datasets import Dataset
-from peft import LoraConfig, PeftModel
+from peft import PeftModel
 from transformers import TrainingArguments
 
 from ab.gpt.util.Const import conf_llm_dir, nngpt_dir
@@ -331,14 +331,15 @@ def run_kto(
     # ── 2. LoRA config ──────────────────────────────────────────────────────
     if tune_layers is None:
         tune_layers = range(START_LAYER, END_LAYER)
-    peft_config = LoraConfig(
+    from ab.gpt.util.KTO import kto_lora_config
+    peft_config = kto_lora_config(
+        target_modules=target_modules,
         r=r,
         lora_alpha=lora_alpha,
-        target_modules=list(target_modules) if not isinstance(target_modules, list) else target_modules,
-        layers_to_transform=list(tune_layers),
         lora_dropout=lora_dropout,
         bias=bias,
         task_type=task_type,
+        layers_to_transform=tune_layers,
     )
 
     # ── 3. Load model + tokenizer ───────────────────────────────────────────

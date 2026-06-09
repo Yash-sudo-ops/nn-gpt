@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ab.gpt.kto_pipeline.kto_generator import build_prompt_messages
 from ab.gpt.iterative_pipeline.novelty_checker import NoveltyChecker
 from ab.gpt.util.Const import conf_llm_dir, nngpt_dir
+from ab.gpt.util.CycleResults import save_cycle_results
 
 logger = logging.getLogger("kto_selfcontained")
 
@@ -651,9 +652,7 @@ class SelfContainedKTOPipeline:
             "training": train_stats,
             "cycle_time_minutes": (time.time() - t0) / 60,
         }
-        (self._cycle_dir(cycle) / "metrics.json").write_text(
-            json.dumps(result, indent=2, default=str), encoding="utf-8"
-        )
+        save_cycle_results(result, self._cycle_dir(cycle) / "metrics.json")
         return result
 
     def run(self) -> Dict[str, Any]:
@@ -685,9 +684,7 @@ class SelfContainedKTOPipeline:
             "undesirable_total": len(self.undesirable),
             "cycles": self.cycle_results,
         }
-        (self.output_dir / "all_cycles_results.json").write_text(
-            json.dumps(agg, indent=2, default=str), encoding="utf-8"
-        )
+        save_cycle_results(agg, self.output_dir / "all_cycles_results.json")
 
     # ── subprocess runner with retry ────────────────────────────────────────────
 

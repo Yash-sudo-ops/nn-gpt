@@ -120,12 +120,14 @@ python -m ab.stat.export
 
 - **`ab.gpt.TuneNNGen*.py`** – Performs fine-tuning and evaluation of an LLM. For evaluation purposes, the LLM generates neural network models, which are then trained to assess improvements in the LLM’s performance on this task. The -s flag allows skipping model generation for the specified number of epochs.
 
-- **`ab/gpt/AccPredictor.py`** – Fine-tunes and evaluates a Qwen3-8B accuracy predictor from LEMUR training runs. Given early-epoch accuracies and neural network code, it predicts final `best_accuracy` and `best_epoch`. Running the script executes the full pipeline:
+- **`ab/gpt/AccPredictor.py`** – Fine-tunes and evaluates a Qwen3-8B accuracy predictor from LEMUR training runs. Given early-epoch accuracies and neural network code, it predicts final `best_accuracy` and `best_epoch`.
 
-  1. **Data preprocessing** — loads runs from the nn_dataset API, keeps runs with ≥50 epochs, writes `ab/gpt/data/llm_finetuning_data.jsonl`
-  2. **Dataset preparation** — builds ChatML train/val/test splits under `ab/gpt/data/`
-  3. **Training** — QLoRA fine-tune with early stopping; checkpoint saved to `ab/gpt/model2/`
-  4. **Testing** — evaluates on the test split; writes `ab/gpt/data/test_predictions.csv` and `test_metrics.log`
+  Running the script runs four steps in order:
+
+  1. **Preprocessing** — loads training runs from the nn_dataset API, filters runs with ≥50 epochs, and writes `ab/gpt/data/llm_finetuning_data.jsonl`
+  2. **Data preparation for training** — converts preprocessed runs into ChatML train/val/test splits (`ab/gpt/data/train_llm_dataset.jsonl`, `val_llm_dataset.jsonl`, `test_llm_dataset.jsonl`)
+  3. **Model training** — QLoRA fine-tunes Qwen3-8B with validation and early stopping; saves the checkpoint to `ab/gpt/model2/`
+  4. **Model testing** — runs inference on the test split and writes `ab/gpt/data/test_predictions.csv` and `test_metrics.log`
 
   ```bash
   python ab/gpt/AccPredictor.py

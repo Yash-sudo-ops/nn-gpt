@@ -53,7 +53,7 @@ python -m ab.gpt.TuneNNGen --use_predictor
 | `ab/gpt/agents/predictor.py` | Optional accuracy prediction node |
 | `ab/gpt/agents/state.py` | Shared `AgentState` TypedDict — field names match LEMUR DB columns |
 | `ab/gpt/util/Tune.py` | Single source of truth: `nn_gen`, `trans_gen`, `_evaluate_epoch`, `_finetune_epoch`, `generate_step`, `evaluate_step`, `finetune_step` |
-| `ab/gpt/util/AccPredictor.py` | Accuracy predictor interface (to be implemented) |
+| `ab/gpt/AccPredictor.py` | Accuracy predictor: data prep, fine-tuning, and evaluation |
 
 ## Create and Activate a Virtual Environment (recommended)
 For Linux/Mac:
@@ -119,6 +119,34 @@ python -m ab.stat.export
 - **`ab.gpt.NNEval.py`** – Evaluates the models generated in the previous step.
 
 - **`ab.gpt.TuneNNGen*.py`** – Performs fine-tuning and evaluation of an LLM. For evaluation purposes, the LLM generates neural network models, which are then trained to assess improvements in the LLM’s performance on this task. The -s flag allows skipping model generation for the specified number of epochs.
+
+- **`ab/gpt/AccPredictor.py`** – Fine-tunes and evaluates a Qwen3-8B accuracy predictor from LEMUR training runs. Given early-epoch accuracies and neural network code, it predicts final `best_accuracy` and `best_epoch`. Running the script executes the full pipeline:
+
+  1. **Data preprocessing** — loads runs from the nn_dataset API, keeps runs with ≥50 epochs, writes `ab/gpt/data/llm_finetuning_data.jsonl`
+  2. **Dataset preparation** — builds ChatML train/val/test splits under `ab/gpt/data/`
+  3. **Training** — QLoRA fine-tune with early stopping; checkpoint saved to `ab/gpt/model2/`
+  4. **Testing** — evaluates on the test split; writes `ab/gpt/data/test_predictions.csv` and `test_metrics.log`
+
+  ```bash
+  python ab/gpt/AccPredictor.py
+  ```
+
+  Individual steps can also be imported:
+
+  ```python
+  from ab.gpt.AccPredictor import data_preprocessing, prepare_llm_datasets, train_model, test_model, predict_best_accuracy
+  from ab.gpt.AccPredictor import DEFAULT_TRAIN_PATH, DEFAULT_VAL_PATH, DEFAULT_OUTPUT_DIR, DEFAULT_TEST_PATH
+
+  data_preprocessing()
+  prepare_llm_datasets()
+  train_model(DEFAULT_TRAIN_PATH, DEFAULT_VAL_PATH)
+  test_model(model_path=DEFAULT_OUTPUT_DIR, data_path=DEFAULT_TEST_PATH)
+
+  # Inference with the published Hugging Face checkpoint
+  best_acc, best_epoch = predict_best_accuracy(task, dataset, metric, nn_code, epoch_1_acc, epoch_2_acc)
+  ```
+
+  Requires a GPU with ≥24 GB VRAM, `unsloth`, and the LEMUR/nn-dataset package installed.
 
 <a href='https://huggingface.co/ABrain'><strong>Fine-tuned LLMs</strong></a>
 

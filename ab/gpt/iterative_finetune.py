@@ -62,16 +62,6 @@ class IterativeFinetuner:
             max_retries: int = 3,
             use_optimized_training: bool = True,
             num_train_epochs: int = 5,
-            mobile_deploy: bool = False,
-            mobile_input_size: int = 32,
-            mobile_max_params: int = 500_000,
-            mobile_export_tflite: bool = True,
-            mobile_bench_desktop: bool = True,
-            benchmark_android: bool = False,
-            skip_finetuning: bool = False,
-            generation_model: Optional[str] = None,
-            force_regenerate: bool = False,
-            skip_data_augment: bool = False,
     ):
         self.output_dir = out_dir / 'curation_output'
         self.base_data_dir = self.output_dir / 'chat_data'
@@ -88,16 +78,6 @@ class IterativeFinetuner:
         self.max_retries = max_retries
         self.use_optimized_training = use_optimized_training
         self.num_train_epochs = num_train_epochs
-        self.mobile_deploy_enabled = mobile_deploy
-        self.mobile_input_size = mobile_input_size
-        self.mobile_max_params = mobile_max_params
-        self.mobile_export_tflite = mobile_export_tflite
-        self.mobile_bench_desktop = mobile_bench_desktop
-        self.benchmark_android = benchmark_android
-        self.skip_finetuning = skip_finetuning
-        self.generation_model = generation_model
-        self.force_regenerate = force_regenerate
-        self.skip_data_augment = skip_data_augment
 
         # Initialize components
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -185,43 +165,6 @@ class IterativeFinetuner:
 
         # Return as-is (will fail validation if doesn't exist)
         return config_path
-
-    def _resolve_generation_model_path(self) -> str:
-        """
-        Model path/id for nn_sftcodegen_rag when skipping fine-tuning.
-        Uses --generation_model if set, else local out/llm/<org>/<model> from llm_conf.
-        """
-        if self.generation_model:
-            path = Path(self.generation_model)
-            if path.exists():
-                logger.info(f"Using --generation_model: {path.resolve()}")
-                return str(path.resolve())
-            logger.info(f"Using --generation_model (HF id or path): {self.generation_model}")
-            return self.generation_model
-
-        with open(self.llm_conf, encoding="utf-8") as f:
-            base_name = json.load(f).get("base_model_name")
-        if not base_name:
-            raise RuntimeError(f"No base_model_name in {self.llm_conf}")
-
-        local_model = (out_dir / "llm").joinpath(*base_name.split("/"))
-        candidates = [
-            local_model,
-            out_dir / "qlora-sft" / "final",
-            out_dir / "curation_output" / "cycle_1" / "checkpoint",
-        ]
-        for cand in candidates:
-            if not cand.exists():
-                continue
-            if (cand / "adapter_config.json").exists() or (cand / "config.json").exists():
-                logger.info(f"Resolved generation model: {cand}")
-                return str(cand.resolve())
-
-        logger.warning(
-            f"No local weights under {local_model}; using HuggingFace id '{base_name}' "
-            "(will download if not cached)"
-        )
-        return base_name
 
     def _ensure_curation_output_data(self):
         """Ensure curation data exists in curation_output/, create if missing."""
@@ -602,22 +545,18 @@ class IterativeFinetuner:
             try:
                 # Pass checkpoint_path as base_model to use finetuned weights
                 # Output will go to cycle_X/generation/
-                gen_kwargs = dict(
+                sft_gen_main(
                     output_dir=str(output_dir),
-                    base_model=checkpoint_path,
-                    data_dir=str(data_dir) if data_dir else None,
-                    max_items=num_prompts,
+                    base_model=checkpoint_path,  # Use the finetuned checkpoint from this cycle
+                    data_dir=str(data_dir) if data_dir else None,  # Use cycle's test data for RAG examples
+                    max_items=num_prompts,  # Number of prompts to process
                     temperature=0.7,
                     top_k=100,
                     top_p=0.95,
                     rejection_sampling=True,
                     max_rejections=5,
-                    samples_per_prompt=self.samples_per_prompt,
+                    samples_per_prompt=self.samples_per_prompt,  # Generate N models per prompt
                 )
-                if self.mobile_deploy_enabled:
-                    gen_kwargs["prompt_template"] = "mobile_rag_rules.json"
-                    logger.info("Mobile deploy: using prompt template mobile_rag_rules.json")
-                sft_gen_main(**gen_kwargs)
             except Exception as e:
                 logger.error(f"Generation function failed: {e}")
                 raise
@@ -666,8 +605,6 @@ class IterativeFinetuner:
         if accepted_code_dir.exists():
             logger.info("Post-processing generated code files to fix missing imports...")
             self._fix_generated_code(accepted_code_dir)
-            if self.mobile_deploy_enabled:
-                self._fix_mobile_codegen_patterns(accepted_code_dir)
 
             logger.info("Re-validating all generated code files...")
             results = self._revalidate_generated_models(results, accepted_code_dir)
@@ -965,80 +902,6 @@ class IterativeFinetuner:
         else:
             logger.info(f"All {total_files} code files already have required imports")
 
-    def _fix_mobile_codegen_patterns(self, accepted_code_dir: Path) -> None:
-        """Fix common mobile-codegen bugs that break NNEval (out_shape tuple, bare device)."""
-        import re
-
-        fixed = 0
-        for code_file in sorted(accepted_code_dir.glob("B*/new_nn.py")):
-            try:
-                content = code_file.read_text()
-                original = content
-
-                # NNEval passes in_shape as (N, C, H, W) from get_in_shape — channels at index 1
-                if "self.in_channels = in_shape[0]" in content:
-                    content = content.replace(
-                        "self.in_channels = in_shape[0]",
-                        "self.in_channels = in_shape[1] if len(in_shape) == 4 else in_shape[0]",
-                    )
-                content = re.sub(
-                    r"nn\.Conv2d\(\s*in_shape\[0\]",
-                    "nn.Conv2d(self.in_channels",
-                    content,
-                )
-
-                # nn.Linear(feat, out_shape) -> out_shape[0]
-                content = re.sub(
-                    r"nn\.Linear\(\s*([^,]+?)\s*,\s*out_shape\s*\)",
-                    r"nn.Linear(\1, out_shape[0])",
-                    content,
-                )
-
-                # .to(device) -> .to(self.device)
-                if "self.device = device" in content or "self.device=device" in content:
-                    content = re.sub(r"\.to\(\s*device\s*\)", ".to(self.device)", content)
-
-                # Ensure __init__ stores device + num_classes (minimal injection)
-                if "class Net" in content and "self.in_channels" not in content:
-                    content = re.sub(
-                        r"(super\([^)]*\)\s*\n)",
-                        r"\1        self.in_channels = in_shape[1] if len(in_shape) == 4 else in_shape[0]\n",
-                        content,
-                        count=1,
-                    )
-
-                if "class Net" in content and "self.num_classes" not in content:
-                    if "self.device = device" not in content and "self.device=device" not in content:
-                        content = re.sub(
-                            r"(super\([^)]*\)\s*\n)",
-                            r"\1        self.device = device\n        self.num_classes = out_shape[0]\n",
-                            content,
-                            count=1,
-                        )
-                    else:
-                        content = re.sub(
-                            r"(super\([^)]*\)\s*\n)",
-                            r"\1        self.num_classes = out_shape[0]\n",
-                            content,
-                            count=1,
-                        )
-
-                if "self.num_classes" in content:
-                    content = re.sub(
-                        r"nn\.Linear\(\s*([^,]+?)\s*,\s*out_shape\[0\]\s*\)",
-                        r"nn.Linear(\1, self.num_classes)",
-                        content,
-                    )
-
-                if content != original:
-                    code_file.write_text(content)
-                    fixed += 1
-            except Exception as exc:
-                logger.warning(f"Mobile codegen fix failed for {code_file}: {exc}")
-
-        if fixed:
-            logger.info(f"Mobile codegen fixes applied to {fixed} file(s)")
-
     def _revalidate_generated_models(self, results: List[Dict[str, Any]], accepted_code_dir: Path) -> List[Dict[str, Any]]:
         """
         Re-validate all generated code files.
@@ -1312,9 +1175,6 @@ class IterativeFinetuner:
             "--cycle", str(cycle),
             "--nneval_dir", str(nneval_dir),
         ]
-        if self.mobile_deploy_enabled:
-            cmd.append("--save_weights_pth")
-            logger.info("Mobile deploy: NNEval will save weights.pth per successful model")
 
         logger.info(f"Running evaluation wrapper: {' '.join(cmd)}")
 
@@ -1844,19 +1704,9 @@ class IterativeFinetuner:
         else:
             data_dir = self.data_manager.get_training_data_dir(cycle - 1, self.output_dir)
 
-        # Step 1: Fine-tune (optional — use --skip_finetuning for mobile/quick tests)
+        # Step 1: Fine-tune (skip if checkpoint exists)
         checkpoint_path = self.output_dir / f"cycle_{cycle}" / "checkpoint"
-        if self.skip_finetuning:
-            gen_model = self._resolve_generation_model_path()
-            checkpoint_path = Path(gen_model)
-            logger.info(f"✓ --skip_finetuning: using model for generation: {checkpoint_path}")
-            ft_result = {
-                "success": True,
-                "checkpoint_dir": str(checkpoint_path),
-                "skipped": True,
-                "skip_finetuning": True,
-            }
-        elif checkpoint_path.exists() and (checkpoint_path / "adapter_config.json").exists():
+        if checkpoint_path.exists() and (checkpoint_path / "adapter_config.json").exists():
             logger.info(f"✓ Existing checkpoint found: {checkpoint_path}")
             logger.info("Skipping fine-tuning (checkpoint already exists)")
             ft_result = {"success": True, "checkpoint_dir": str(checkpoint_path)}
@@ -1873,10 +1723,7 @@ class IterativeFinetuner:
         # Step 2: Generate models (skip if generation results exist)
         generation_dir = self.output_dir / f"cycle_{cycle}" / "generation"
         results_file = generation_dir / "results.jsonl"
-        if self.force_regenerate and generation_dir.exists():
-            logger.info(f"--force_regenerate: removing {generation_dir}")
-            shutil.rmtree(generation_dir)
-        if results_file.exists() and (generation_dir / "accepted_code").exists() and not self.force_regenerate:
+        if results_file.exists() and (generation_dir / "accepted_code").exists():
             logger.info(f"✓ Existing generation results found: {generation_dir}")
             logger.info("Skipping generation (results already exist)")
             # Load existing results
@@ -1922,42 +1769,6 @@ class IterativeFinetuner:
         logger.info(f"Starting checksum for cycle {cycle} evaluation: {starting_checksum}")
         eval_result = self.evaluate_models(cycle, Path(gen_result["output_dir"]), starting_checksum=starting_checksum)
 
-        mobile_result = None
-        if self.mobile_deploy_enabled:
-            try:
-                from ab.gpt.iterative_pipeline.mobile.deploy import run_mobile_deploy_for_cycle
-                nneval_dir = self.output_dir / f"cycle_{cycle}" / "nneval"
-                logger.info("")
-                logger.info("=" * 80)
-                logger.info(f"CYCLE {cycle}: MOBILE DEPLOY (optional track)")
-                logger.info("=" * 80)
-                mobile_result = run_mobile_deploy_for_cycle(
-                    cycle,
-                    nneval_dir,
-                    self.output_dir,
-                    input_size=self.mobile_input_size,
-                    max_params=self.mobile_max_params,
-                    export_tflite=self.mobile_export_tflite,
-                    bench_desktop=self.mobile_bench_desktop,
-                )
-                if self.benchmark_android:
-                    from ab.gpt.iterative_pipeline.mobile.android_bench import (
-                        adb_available,
-                        benchmark_tflite_on_device,
-                    )
-                    if adb_available():
-                        mobile_root = self.output_dir / f"cycle_{cycle}" / "mobile_deploy"
-                        for gen_dir in sorted(mobile_root.glob("gen_*")):
-                            for tflite in (gen_dir / "tflite").glob("*.tflite"):
-                                bench = benchmark_tflite_on_device(tflite)
-                                meta_path = gen_dir / "android_bench.json"
-                                meta_path.write_text(json.dumps({tflite.name: bench}, indent=2))
-                    else:
-                        logger.warning("[mobile] --benchmark_android set but no ADB device; skipped")
-            except Exception as exc:
-                logger.error(f"[mobile] deploy failed (non-fatal): {exc}")
-                mobile_result = {"success": False, "error": str(exc)}
-
         # Step 4: Filter successful & novel models
         # Ensure gen_result has 'results' key - reload if missing (safety check for resume scenarios)
         if "results" not in gen_result or not gen_result.get("results"):
@@ -1980,11 +1791,8 @@ class IterativeFinetuner:
         logger.info(f"Filtering with {len(gen_result.get('results', []))} generation results")
         selected_models = self.filter_successful_novel(gen_result, eval_result, starting_checksum=starting_checksum)
 
-        # Step 5: Convert to training data (optional — skip for mobile-only quick runs)
-        if self.skip_data_augment:
-            logger.info("--skip_data_augment: skipping filter→training-data steps for this cycle")
-            augment_stats = {"total_examples": 0, "new_examples_added": 0, "skipped": True}
-        elif selected_models:
+        # Step 5: Convert to training data
+        if selected_models:
             # Ensure checkpoint_path is a string (not Path) for JSON serialization
             checkpoint_str = str(checkpoint_path) if isinstance(checkpoint_path, Path) else checkpoint_path
             chat_examples = self.convert_to_training_data(
@@ -2013,7 +1821,7 @@ class IterativeFinetuner:
                     )
                 logger.info(f"Marked {len(selected_models)} selected models as seen in novelty checker")
                 self.novelty_checker.save_cache()
-        elif not self.skip_data_augment:
+        else:
             logger.warning(f"No models selected for cycle {cycle}")
             # Still need to create training data directory for next cycle
             # (even if no new models are added, we need to copy previous cycle's data)
@@ -2022,8 +1830,6 @@ class IterativeFinetuner:
                 cycle,
                 self.output_dir
             )
-        else:
-            augment_stats = {"total_examples": 0, "new_examples_added": 0, "skipped": True}
 
         cycle_time = time.time() - cycle_start
 
@@ -2051,8 +1857,6 @@ class IterativeFinetuner:
             },
             "cycle_time_minutes": cycle_time / 60,
         }
-        if mobile_result is not None:
-            result["mobile_deploy"] = mobile_result
 
         # Save cycle results
         cycle_results_file = self.output_dir / f"cycle_{cycle}" / "cycle_results.json"
@@ -2073,9 +1877,6 @@ class IterativeFinetuner:
         logger.info(f"Samples per prompt: {self.samples_per_prompt}")
         logger.info(f"Accuracy threshold: {self.accuracy_threshold * 100:.1f}%")
         logger.info(f"Novelty check: {self.novelty_check_enabled}")
-        logger.info(f"Mobile deploy track: {self.mobile_deploy_enabled}")
-        logger.info(f"Skip fine-tuning: {self.skip_finetuning}")
-        logger.info(f"Skip data augment: {self.skip_data_augment}")
         logger.info(f"Max retries per operation: {self.max_retries}")
         if self.resume_from_cycle:
             logger.info(f"Resuming from cycle: {self.resume_from_cycle}")
@@ -2229,27 +2030,6 @@ def main():
                         help="Use original default training hyperparameters")
     parser.add_argument("--num_train_epochs", type=int, default=5,
                         help="Number of fine-tuning epochs per cycle (default: 5)")
-    parser.add_argument("--mobile_deploy", action="store_true", default=False,
-                        help="Enable separate mobile track: mobile prompts + TFLite export after eval")
-    parser.add_argument("--mobile_input_size", type=int, default=32,
-                        help="Default spatial input size for TFLite export (default: 32)")
-    parser.add_argument("--mobile_max_params", type=int, default=500_000,
-                        help="Skip mobile export if model exceeds this param count")
-    parser.set_defaults(mobile_export_tflite=True, mobile_bench_desktop=True)
-    parser.add_argument("--no_mobile_tflite", dest="mobile_export_tflite", action="store_false",
-                        help="Mobile track: only copy code + weights.pth, skip TFLite")
-    parser.add_argument("--no_mobile_bench", dest="mobile_bench_desktop", action="store_false",
-                        help="Mobile track: skip desktop TFLite CPU benchmark")
-    parser.add_argument("--benchmark_android", action="store_true", default=False,
-                        help="Run ADB benchmark_model on device when attached (default: off)")
-    parser.add_argument("--skip_finetuning", action="store_true", default=False,
-                        help="Skip LoRA fine-tuning; generate with base/LoRA from --generation_model or llm_conf")
-    parser.add_argument("--generation_model", type=str, default=None,
-                        help="Model path or HF id for generation when --skip_finetuning (default: out/llm/<base_model>)")
-    parser.add_argument("--force_regenerate", action="store_true", default=False,
-                        help="Delete existing cycle_X/generation and regenerate (e.g. after enabling --mobile_deploy)")
-    parser.add_argument("--skip_data_augment", action="store_true", default=False,
-                        help="Skip filter→training-data augment (faster mobile/TFLite smoke test)")
 
     args = parser.parse_args()
 
@@ -2274,16 +2054,6 @@ def main():
         max_retries=args.max_retries,
         use_optimized_training=args.use_optimized_training,
         num_train_epochs=args.num_train_epochs,
-        mobile_deploy=args.mobile_deploy,
-        mobile_input_size=args.mobile_input_size,
-        mobile_max_params=args.mobile_max_params,
-        mobile_export_tflite=args.mobile_export_tflite,
-        mobile_bench_desktop=args.mobile_bench_desktop,
-        benchmark_android=args.benchmark_android,
-        skip_finetuning=args.skip_finetuning,
-        generation_model=args.generation_model,
-        force_regenerate=args.force_regenerate,
-        skip_data_augment=args.skip_data_augment,
     )
 
     # Run pipeline

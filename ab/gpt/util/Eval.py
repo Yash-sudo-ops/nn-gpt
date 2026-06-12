@@ -13,7 +13,7 @@ import ab.nn.api as nn_dataset
 
 
 class Eval:
-    def __init__(self, model_source_package: str, task='img-classification', dataset='cifar-10', metric='acc', prm=None, save_to_db=False, prefix=None, save_path=None, use_ast_validation=None, save_pth_weights=False):
+    def __init__(self, model_source_package: str, task='img-classification', dataset='cifar-10', metric='acc', prm=None, save_to_db=False, prefix=None, save_path=None, use_ast_validation=None):
         """
         Evaluates a given model on a specified dataset for classification
         :param model_source_package: The package name of the model to evaluate
@@ -35,8 +35,7 @@ class Eval:
         self.save_to_db = save_to_db
         self.prefix = prefix
         self.save_path = save_path
-        self.save_pth_weights = bool(save_pth_weights)
-
+        
         if use_ast_validation is None:
             self.use_ast_validation = prefix is not None and 'delta' in str(prefix).lower()
         else:
@@ -90,18 +89,6 @@ class Eval:
         new_checksum = uuid4(code)
         if new_checksum not in ids_list:
             with _isolated_eval_tmp_modules():
-                if self.save_pth_weights:
-                    from ab.gpt.util.check_nn_save_weights import check_nn_save_pth
-                    return check_nn_save_pth(
-                        code,
-                        self.task,
-                        self.dataset,
-                        self.metric,
-                        self.prm,
-                        self.save_to_db,
-                        self.prefix,
-                        self.save_path,
-                    )
                 return api.check_nn(
                     code,
                     self.task,

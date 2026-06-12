@@ -3,11 +3,13 @@
 Fine-tune Qwen3-8B (Unsloth 4-bit) for outcome prediction with early stopping.
 
 Pipeline:
-  1. prepare_llm_datasets — raw JSONL → ChatML train/val/test splits
-  2. train_model          — QLoRA fine-tune with validation + early stopping
+  1. data_preprocessing   — nn_dataset API → llm_finetuning_data JSONL/CSV
+  2. prepare_llm_datasets — raw JSONL → ChatML train/val/test splits
+  3. train_model          — QLoRA fine-tune with validation + early stopping
+  4. test_model           — evaluate on test set, save predictions and metrics
 
 Usage:
-    python TuneAccuracyPrediction.py
+    python AccPredictor.py
 """
 
 from __future__ import annotations
@@ -17,7 +19,10 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+import numpy as np
+import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -36,10 +41,16 @@ except ImportError as e:
     ) from e
 
 RAW_INPUT_PATH = SCRIPT_DIR / "data" / "llm_finetuning_data.jsonl"
+RAW_CSV_PATH = SCRIPT_DIR / "data" / "llm_finetuning_data.csv"
 PREP_OUTPUT_DIR = SCRIPT_DIR / "data"
 DEFAULT_TRAIN_PATH = PREP_OUTPUT_DIR / "train_llm_dataset.jsonl"
 DEFAULT_VAL_PATH = PREP_OUTPUT_DIR / "val_llm_dataset.jsonl"
+DEFAULT_TEST_PATH = PREP_OUTPUT_DIR / "test_llm_dataset.jsonl"
 DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "model2"
+DEFAULT_TEST_OUTPUT_PATH = PREP_OUTPUT_DIR / "test_predictions.csv"
+DEFAULT_TEST_METRICS_PATH = PREP_OUTPUT_DIR / "test_metrics.log"
+TEST_MAX_NEW_TOKENS = 64
+TEST_TEMPERATURE = 0.0
 
 MODEL_NAME = "unsloth/Qwen3-8B-unsloth-bnb-4bit"
 MODEL_FALLBACKS = ("unsloth/Qwen3-8B-bnb-4bit", "Qwen/Qwen3-8B")
@@ -450,6 +461,209 @@ def _write_jsonl(path: Path, data: list[dict]) -> None:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
+# --- data_preprocessing  ---
+
+_DP_GROUP_KEYS = ("nn_id", "prm_id", "transform_id", "dataset")
+_DP_REQUIRED_COLS = ("id", "nn_id", "prm_id", "transform_id", "dataset", "epoch", "accuracy")
+_DP_EARLY_EPOCHS = (1, 2)
+_DP_MIN_EPOCHS = 50
+_DP_OUTPUT_COLUMNS = [
+    "id",
+    "task",
+    "dataset",
+    "metric",
+    "nn",
+    "nn_code",
+    "transform_code",
+    "prm",
+    "accuracy_epoch_1",
+    "accuracy_epoch_2",
+    "best_accuracy",
+    "epochs_to_best",
+    "total_epochs",
+]
+
+
+def _dp_load_nn_data() -> pd.DataFrame:
+    try:
+        from ab.nn.api import data as nn_data
+    except ImportError as exc:
+        raise ImportError(
+            "Could not import ab.nn.api.data. Install the nn_dataset package."
+        ) from exc
+
+    df = pd.DataFrame(nn_data(only_best_accuracy=False))
+    missing = [col for col in _DP_REQUIRED_COLS if col not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+    return df
+
+
+def _dp_normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    if df["accuracy"].max() <= 1.0:
+        df["accuracy"] = df["accuracy"] * 100
+    df["epoch"] = df["epoch"].astype(int)
+    return df
+
+
+def _dp_filter_long_runs(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
+    group_cols = list(_DP_GROUP_KEYS)
+    total_runs = df.groupby(group_cols, observed=True).ngroups
+    run_max_epoch = df.groupby(group_cols, observed=True)["epoch"].transform("max")
+    filtered = df[run_max_epoch >= _DP_MIN_EPOCHS].copy()
+    valid_runs = filtered.groupby(group_cols, observed=True).ngroups
+    return filtered, total_runs, valid_runs
+
+
+def _dp_parse_prm(value: Any) -> Any:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return value
+    if pd.isna(value):
+        return {}
+    return value
+
+
+def _dp_process_run(
+    group_df: pd.DataFrame,
+    dataset: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Return (record, drop_reason). drop_reason is None on success."""
+    group_df = group_df.sort_values("epoch").drop_duplicates("epoch", keep="first")
+    acc_by_epoch = group_df.set_index("epoch")["accuracy"]
+
+    for epoch in _DP_EARLY_EPOCHS:
+        if epoch not in acc_by_epoch.index:
+            return None, f"missing_epoch_{epoch}"
+        if pd.isna(acc_by_epoch.at[epoch]):
+            return None, f"missing_epoch_{epoch}"
+
+    best_accuracy = group_df["accuracy"].max()
+    if pd.isna(best_accuracy):
+        return None, "missing_best_accuracy"
+
+    epochs_to_best = int(
+        group_df.loc[group_df["accuracy"] == best_accuracy, "epoch"].min()
+    )
+    first_row = group_df.iloc[0]
+
+    record = {
+        "id": str(first_row["id"]),
+        "task": first_row["task"],
+        "dataset": dataset,
+        "metric": first_row["metric"],
+        "nn": first_row["nn"],
+        "nn_code": first_row["nn_code"],
+        "transform_code": first_row["transform_code"],
+        "prm": _dp_parse_prm(first_row["prm"]),
+        "accuracy_epoch_1": float(acc_by_epoch.at[1]),
+        "accuracy_epoch_2": float(acc_by_epoch.at[2]),
+        "best_accuracy": float(best_accuracy),
+        "epochs_to_best": epochs_to_best,
+        "total_epochs": int(group_df["epoch"].max()),
+    }
+    return record, None
+
+
+def _dp_build_records(df: pd.DataFrame) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    records: list[dict[str, Any]] = []
+    drop_counts: dict[str, int] = {}
+
+    grouped = df.groupby(list(_DP_GROUP_KEYS), observed=True)
+    for (_, _, _, dataset), group_df in tqdm(grouped, desc="Processing runs"):
+        record, drop_reason = _dp_process_run(group_df, dataset)
+        if record is None:
+            drop_counts[drop_reason] = drop_counts.get(drop_reason, 0) + 1
+            continue
+        records.append(record)
+
+    return records, drop_counts
+
+
+def _dp_serialize_prm(value: Any) -> Any:
+    return json.dumps(value) if isinstance(value, dict) else value
+
+
+def _dp_save_jsonl(records: list[dict[str, Any]], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        for record in records:
+            row = {**record, "prm": _dp_serialize_prm(record["prm"])}
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _dp_save_csv(df_final: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if df_final.empty:
+        pd.DataFrame(columns=_DP_OUTPUT_COLUMNS).to_csv(path, index=False)
+        return
+
+    df_out = df_final.copy()
+    df_out["prm"] = df_out["prm"].map(_dp_serialize_prm)
+    df_out.to_csv(path, index=False)
+
+
+def data_preprocessing(
+    output_jsonl_path: Path | str | None = None,
+    output_csv_path: Path | str | None = None,
+) -> pd.DataFrame:
+    """
+    Prepare data for supervised fine-tuning from nn_dataset.
+
+    Loads per-epoch training stats, keeps runs with >= 50 epochs, extracts
+    accuracy at epochs 1 and 2 as input features, and computes best_accuracy
+    and epochs_to_best from the full run.
+
+    Args:
+        output_jsonl_path: Optional path to save JSONL output.
+        output_csv_path: Optional path to save CSV output.
+
+    Returns:
+        DataFrame with one row per valid training run.
+    """
+    print("Loading data from nn_dataset API...")
+    raw_df = _dp_load_nn_data()
+    rows_loaded = len(raw_df)
+    print(f"Loaded {rows_loaded:,} rows")
+
+    df = _dp_normalize_dataframe(raw_df)
+    df, total_runs, valid_runs = _dp_filter_long_runs(df)
+    kept_pct = (100 * valid_runs / total_runs) if total_runs else 0.0
+    print(
+        f"Runs with >= {_DP_MIN_EPOCHS} epochs: {valid_runs:,} / {total_runs:,} "
+        f"({kept_pct:.1f}% kept)"
+    )
+
+    records, drop_counts = _dp_build_records(df)
+    dropped = sum(drop_counts.values())
+    df_final = pd.DataFrame(records)
+
+    print(f"Final records: {len(df_final):,} (dropped {dropped:,})")
+    for reason, count in sorted(drop_counts.items()):
+        print(f"  - {reason}: {count:,}")
+
+    if output_jsonl_path:
+        jsonl_path = Path(output_jsonl_path)
+        _dp_save_jsonl(records, jsonl_path)
+        print(f"Wrote JSONL: {jsonl_path}")
+
+    if output_csv_path:
+        csv_path = Path(output_csv_path)
+        _dp_save_csv(df_final, csv_path)
+        print(f"Wrote CSV: {csv_path}")
+
+    if valid_runs:
+        success_rate = 100 * len(df_final) / valid_runs
+        print(f"Success rate: {success_rate:.1f}% of long runs")
+
+    return df_final
+
+
 def prepare_llm_datasets(
     input_path: Path = RAW_INPUT_PATH,
     output_dir: Path = PREP_OUTPUT_DIR,
@@ -638,4 +852,354 @@ def train_model(
     output_dir.mkdir(parents=True, exist_ok=True)
     trainer.save_model(str(output_dir))
     tokenizer.save_pretrained(str(output_dir))
+
+
+# --- model testing (from early_stopping_full_code_early_epochs_qwen8/test_model.py) ---
+
+
+def _test_load_checkpoint(model_path: Path, max_seq_len: int):
+    return FastLanguageModel.from_pretrained(
+        model_name=str(model_path),
+        max_seq_length=max_seq_len,
+        dtype=None,
+        load_in_4bit=True,
+        trust_remote_code=True,
+    )
+
+
+def _test_load_data(path: Path, limit: int | None = None) -> list[dict]:
+    data: list[dict] = []
+    with open(path, encoding="utf-8") as handle:
+        for i, line in enumerate(handle):
+            if limit is not None and i >= limit:
+                break
+            if line.strip():
+                data.append(json.loads(line.strip()))
+    return data
+
+
+def _test_parse_assistant_json(text: str) -> dict | None:
+    text = text.strip()
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    text = text.replace("Ġ", " ")
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    if "```" in text:
+        text = text.split("```", 1)[0].strip()
+    text = re.sub(r"\s*```\s*$", "", text).strip()
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start : i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def _test_get_ground_truth(messages: list[dict]) -> dict | None:
+    for message in messages:
+        if message.get("role") == "assistant":
+            return _test_parse_assistant_json(message.get("content", ""))
+    return None
+
+
+def _test_build_prompt_messages(messages: list[dict]) -> list[dict]:
+    return [m for m in messages if m.get("role") in ("system", "user")]
+
+
+def _test_extract_run_id(messages: list[dict]) -> str:
+    for message in messages:
+        if message.get("role") == "user":
+            match = re.search(r"id:\s*(\S+)", message.get("content", ""))
+            return match.group(1).strip() if match else ""
+    return ""
+
+
+def _test_extract_dataset(messages: list[dict]) -> str:
+    for message in messages:
+        if message.get("role") == "user":
+            match = re.search(r"^dataset:\s*(.+)$", message.get("content", ""), re.MULTILINE)
+            return match.group(1).strip() if match else ""
+    return ""
+
+
+def evaluate_checkpoint(
+    model_path: Path,
+    data_path: Path,
+    *,
+    max_seq_len: int = DEFAULT_MAX_SEQ_LEN,
+    max_new_tokens: int = TEST_MAX_NEW_TOKENS,
+    limit: int | None = None,
+    show_progress: bool = True,
+    temperature: float = TEST_TEMPERATURE,
+    predictions_csv: Path | None = None,
+    show_raw: bool = False,
+) -> dict:
+    """
+    Run greedy generation on test JSONL and compare predictions to ground truth.
+
+    Returns a metric dict with RMSE/MAE for best_accuracy and best_epoch.
+    """
+    if not data_path.exists():
+        raise FileNotFoundError(f"Data not found: {data_path}")
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model not found: {model_path}")
+
+    model, tokenizer = _test_load_checkpoint(model_path, max_seq_len)
+    FastLanguageModel.for_inference(model)
+
+    text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    stop_token_ids = []
+    for tok_str in ("}", "<|im_end|>", "<|endoftext|>"):
+        ids = text_tokenizer.encode(tok_str, add_special_tokens=False)
+        if ids:
+            stop_token_ids.append(ids[-1])
+    if text_tokenizer.eos_token_id is not None:
+        stop_token_ids.append(text_tokenizer.eos_token_id)
+    stop_token_ids = list(set(stop_token_ids))
+
+    raw_data = _test_load_data(data_path, limit)
+    predictions: list[dict] = []
+    parse_failures = 0
+
+    iterator = tqdm(raw_data, desc="Inference", disable=not show_progress)
+    for i, item in enumerate(iterator):
+        messages = item.get("messages", [])
+        gt = _test_get_ground_truth(messages)
+        if gt is None:
+            parse_failures += 1
+            continue
+
+        prompt_messages = _test_build_prompt_messages(messages)
+        text = _apply_chat_template_for_inference(text_tokenizer, prompt_messages)
+        input_ids = text_tokenizer.encode(text, add_special_tokens=False)
+        if len(input_ids) > max_seq_len:
+            input_ids = input_ids[:max_seq_len]
+        input_ids_t = torch.tensor([input_ids], dtype=torch.long, device=model.device)
+        attention_mask = torch.ones_like(input_ids_t)
+        inputs = {"input_ids": input_ids_t, "attention_mask": attention_mask}
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=temperature > 0,
+                temperature=temperature if temperature > 0 else None,
+                pad_token_id=text_tokenizer.pad_token_id or text_tokenizer.eos_token_id,
+                eos_token_id=stop_token_ids if stop_token_ids else None,
+                use_cache=False,
+            )
+
+        generated = text_tokenizer.decode(
+            outputs[0][inputs["input_ids"].shape[1] :],
+            skip_special_tokens=True,
+        )
+        if show_raw:
+            print(f"\n--- raw model completion [sample {i}] ---\n{generated}\n--- end ---\n")
+        pred = _test_parse_assistant_json(generated)
+
+        if pred is None:
+            parse_failures += 1
+            pred = {"best_accuracy": float("nan"), "best_epoch": float("nan")}
+
+        pred_best = pred.get("best_accuracy")
+        pred_prog = pred.get("best_epoch")
+        if pred_best is None:
+            pred_best = float("nan")
+        if pred_prog is None:
+            pred_prog = float("nan")
+        try:
+            pred_prog = float(pred_prog)
+            if pred_prog < 1:
+                pred_prog = float("nan")
+        except (TypeError, ValueError):
+            pred_prog = float("nan")
+
+        gt_best = gt.get("best_accuracy", float("nan"))
+        gt_prog = gt.get("best_epoch", float("nan"))
+        try:
+            gt_prog = float(gt_prog)
+        except (TypeError, ValueError):
+            gt_prog = float("nan")
+
+        predictions.append(
+            {
+                "idx": i,
+                "run_id": _test_extract_run_id(messages),
+                "dataset": _test_extract_dataset(messages),
+                "pred_best_accuracy": pred_best,
+                "pred_best_epoch": pred_prog,
+                "gt_best_accuracy": gt_best,
+                "gt_best_epoch": gt_prog,
+            }
+        )
+
+    valid = [
+        p
+        for p in predictions
+        if not (np.isnan(p["pred_best_accuracy"]) or np.isnan(p["pred_best_epoch"]))
+    ]
+
+    metrics: dict = {
+        "n_samples": len(raw_data),
+        "n_rows_scored": len(predictions),
+        "n_valid": len(valid),
+        "parse_failures": parse_failures,
+        "best_accuracy_rmse": None,
+        "best_accuracy_mae": None,
+        "best_epoch_rmse": None,
+        "best_epoch_mae": None,
+    }
+
+    if valid:
+        pred_best_arr = np.array([p["pred_best_accuracy"] for p in valid])
+        pred_prog_arr = np.array([p["pred_best_epoch"] for p in valid], dtype=float)
+        gt_best_arr = np.array([p["gt_best_accuracy"] for p in valid])
+        gt_prog_arr = np.array([p["gt_best_epoch"] for p in valid], dtype=float)
+        metrics["best_accuracy_rmse"] = float(np.sqrt(np.mean((pred_best_arr - gt_best_arr) ** 2)))
+        metrics["best_accuracy_mae"] = float(np.mean(np.abs(pred_best_arr - gt_best_arr)))
+        metrics["best_epoch_rmse"] = float(np.sqrt(np.mean((pred_prog_arr - gt_prog_arr) ** 2)))
+        metrics["best_epoch_mae"] = float(np.mean(np.abs(pred_prog_arr - gt_prog_arr)))
+
+    if predictions_csv is not None:
+        predictions_csv.parent.mkdir(parents=True, exist_ok=True)
+        with open(predictions_csv, "w", encoding="utf-8") as handle:
+            handle.write(
+                "idx,run_id,dataset,pred_best_accuracy,pred_best_epoch,"
+                "gt_best_accuracy,gt_best_epoch\n"
+            )
+            for p in predictions:
+                handle.write(
+                    f"{p['idx']},{p['run_id']},{p['dataset']},{p['pred_best_accuracy']},"
+                    f"{p['pred_best_epoch']},{p['gt_best_accuracy']},{p['gt_best_epoch']}\n"
+                )
+
+    del model
+    del tokenizer
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return metrics
+
+
+def _test_write_metrics_log(
+    metrics: dict,
+    predictions_path: Path,
+    metrics_path: Path = DEFAULT_TEST_METRICS_PATH,
+) -> Path:
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(metrics_path, "w", encoding="utf-8") as handle:
+        handle.write(f"test_run {predictions_path}\n")
+        handle.write(f"total_samples {metrics['n_samples']}\n")
+        handle.write(f"valid_predictions {metrics['n_valid']}\n")
+        handle.write(f"parse_failures {metrics['parse_failures']}\n")
+        for key, label in (
+            ("best_accuracy_rmse", "best_accuracy_RMSE"),
+            ("best_accuracy_mae", "best_accuracy_MAE"),
+            ("best_epoch_rmse", "best_epoch_RMSE"),
+            ("best_epoch_mae", "best_epoch_MAE"),
+        ):
+            value = metrics[key]
+            if value is None:
+                handle.write(f"{label} nan\n")
+            else:
+                handle.write(f"{label} {value:.4f}\n")
+    return metrics_path
+
+
+def test_model(
+    model_path: Path = DEFAULT_OUTPUT_DIR,
+    data_path: Path = DEFAULT_TEST_PATH,
+    *,
+    max_seq_len: int = DEFAULT_MAX_SEQ_LEN,
+    max_new_tokens: int = TEST_MAX_NEW_TOKENS,
+    limit: int | None = None,
+    output_path: Path = DEFAULT_TEST_OUTPUT_PATH,
+    show_raw: bool = False,
+) -> dict:
+    """Evaluate fine-tuned checkpoint on test JSONL; save predictions CSV and metrics log."""
+    if not data_path.exists():
+        raise FileNotFoundError(f"Test data not found: {data_path}")
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model not found: {model_path}")
+
+    print(f"Checkpoint: {model_path}")
+    print(f"Test data:  {data_path}")
+    print(f"Limit:      {limit or 'all'}")
+
+    metrics = evaluate_checkpoint(
+        model_path,
+        data_path,
+        max_seq_len=max_seq_len,
+        max_new_tokens=max_new_tokens,
+        limit=limit,
+        show_progress=True,
+        predictions_csv=output_path,
+        show_raw=show_raw,
+    )
+
+    print(f"Predictions saved to: {output_path}")
+    print(f"Total samples:      {metrics['n_samples']}")
+    print(f"Valid predictions:  {metrics['n_valid']}")
+    print(f"Parse failures:     {metrics['parse_failures']}")
+
+    if metrics["best_accuracy_rmse"] is None:
+        print("No valid predictions to compute RMSE/MAE (CSV saved anyway).")
+    else:
+        print("best_accuracy:")
+        print(f"  RMSE: {metrics['best_accuracy_rmse']:.4f}")
+        print(f"  MAE:  {metrics['best_accuracy_mae']:.4f}")
+        print("best_epoch:")
+        print(f"  RMSE: {metrics['best_epoch_rmse']:.4f}")
+        print(f"  MAE:  {metrics['best_epoch_mae']:.4f}")
+
+    metrics_path = _test_write_metrics_log(metrics, output_path)
+    print(f"Metrics logged to: {metrics_path}")
+    return metrics
+
+
+def main() -> None:
+    print("=" * 80)
+    print("Step 1/4: Data preprocessing (nn_dataset → JSONL)")
+    print("=" * 80)
+    data_preprocessing(
+        output_jsonl_path=RAW_INPUT_PATH,
+        output_csv_path=RAW_CSV_PATH,
+    )
+
+    print("\n" + "=" * 80)
+    print("Step 2/4: Prepare LLM training datasets")
+    print("=" * 80)
+    train_path, val_path, test_path = prepare_llm_datasets()
+    print(f"Train: {train_path}")
+    print(f"Val:   {val_path}")
+    print(f"Test:  {test_path}")
+
+    print("\n" + "=" * 80)
+    print("Step 3/4: Fine-tune model")
+    print("=" * 80)
+    train_model(train_path=train_path, val_path=val_path)
+    print(f"Model saved to {DEFAULT_OUTPUT_DIR}")
+
+    print("\n" + "=" * 80)
+    print("Step 4/4: Test model on held-out test set")
+    print("=" * 80)
+    test_model(
+        model_path=DEFAULT_OUTPUT_DIR,
+        data_path=test_path,
+        output_path=DEFAULT_TEST_OUTPUT_PATH,
+    )
+    print(f"\nDone. Pipeline complete.")
+
+
+if __name__ == "__main__":
+    main()
 

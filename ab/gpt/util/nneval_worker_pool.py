@@ -430,7 +430,6 @@ def _execute_nneval_task(payload: Dict[str, Any]) -> Dict[str, Any]:
         prefix=payload.get("prefix"),
         save_path=payload.get("save_path"),
         use_ast_validation=payload.get("use_ast_validation"),
-        save_pth_weights=bool(payload.get("save_pth_weights", False)),
     )
     epoch_limit_minutes = payload.get("epoch_limit_minutes")
     if epoch_limit_minutes not in (None, "", 0):

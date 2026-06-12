@@ -113,14 +113,14 @@ python -m ab.stat.export
 
 ## Use
 
-- **`ab.gpt.NNAlter*.py`** – Generates modified neural network models.  
+- **`ab.gpt.NNAlter*`** – Generates modified neural network models.  
   Use the `-e` argument to set the number of epochs for the initial CV model generation.
 
-- **`ab.gpt.NNEval.py`** – Evaluates the models generated in the previous step.
+- **`ab.gpt.NNEval`** – Evaluates the models generated in the previous step.
 
-- **`ab.gpt.TuneNNGen*.py`** – Performs fine-tuning and evaluation of an LLM. For evaluation purposes, the LLM generates neural network models, which are then trained to assess improvements in the LLM’s performance on this task. The -s flag allows skipping model generation for the specified number of epochs.
+- **`ab.gpt.TuneNNGen*`** – Performs fine-tuning and evaluation of an LLM. For evaluation purposes, the LLM generates neural network models, which are then trained to assess improvements in the LLM’s performance on this task. The -s flag allows skipping model generation for the specified number of epochs.
 
-- **`ab/gpt/AccPredictor.py`** – Fine-tunes and evaluates a Qwen3-8B accuracy predictor from LEMUR training runs. Given early-epoch accuracies and neural network code, it predicts final `best_accuracy` and `best_epoch`.
+- **`ab.gpt.AccPredictor`** – Fine-tunes and evaluates a Qwen3-8B accuracy predictor from LEMUR training runs. Given early-epoch accuracies and neural network code, it predicts final `best_accuracy` and `best_epoch`.
 
   Running the script runs four steps in order:
 
@@ -130,7 +130,7 @@ python -m ab.stat.export
   4. **Model testing** — runs inference on the test split and writes `ab/gpt/data/test_predictions.csv` and `test_metrics.log`
 
   ```bash
-  python ab/gpt/AccPredictor.py
+  python -m ab.gpt.AccPredictor
   ```
 
   Individual steps can also be imported:

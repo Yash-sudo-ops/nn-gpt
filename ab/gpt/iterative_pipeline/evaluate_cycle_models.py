@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from ab.gpt import NNEval
 
 
-def evaluate_cycle_models(cycle: int, nneval_dir: Path):
+def evaluate_cycle_models(cycle: int, nneval_dir: Path, save_weights_pth: bool = False):
     """
     Evaluate all models in a cycle's nneval directory.
     """
@@ -53,6 +53,7 @@ def evaluate_cycle_models(cycle: int, nneval_dir: Path):
         custom_synth_dir=str(nneval_dir),
         cycle=cycle,
         use_all_visible_gpus=True,
+        save_pth_weights=save_weights_pth,
     )
 
     epoch_summaries = list(summary.get("epochs", []) or [])
@@ -112,15 +113,20 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate models for a cycle via NNEval")
     parser.add_argument("--cycle", type=int, required=True, help="Cycle number")
     parser.add_argument("--nneval_dir", type=str, help="Path to nneval directory (auto-detected if not provided)")
+    parser.add_argument(
+        "--save_weights_pth",
+        action="store_true",
+        help="Save trained weights.pth into each gen_* dir (for mobile TFLite export)",
+    )
 
     args = parser.parse_args()
 
     if args.nneval_dir:
         nneval_dir = Path(args.nneval_dir)
     else:
-        nneval_dir = out_dir / "iterative_cycles" / f"cycle_{args.cycle}/nneval"
+        nneval_dir = out_dir / "curation_output" / f"cycle_{args.cycle}" / "nneval"
 
-    evaluate_cycle_models(args.cycle, nneval_dir)
+    evaluate_cycle_models(args.cycle, nneval_dir, save_weights_pth=args.save_weights_pth)
 
 
 if __name__ == "__main__":

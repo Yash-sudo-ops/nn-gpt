@@ -268,6 +268,7 @@ def _build_eval_request(
     prefix_for_db: Optional[str],
     epoch_limit_minutes: Optional[int],
     lemur_prefix: Optional[str],
+    save_pth_weights: bool = False,
 ) -> Dict[str, Any]:
     return {
         "model_id": str(model_id),
@@ -283,7 +284,16 @@ def _build_eval_request(
         "epoch_limit_minutes": epoch_limit_minutes,
         "lemur_prefix": lemur_prefix,
         "use_ast_validation": None,
+        "save_pth_weights": bool(save_pth_weights),
     }
+
+
+def _model_display_path(path: Path, base: Path) -> str:
+    """Human-readable path for logs; works for out/nngpt and iterative nneval dirs."""
+    try:
+        return str(path.resolve().relative_to(base.resolve()))
+    except ValueError:
+        return str(path.resolve())
 
 
 def _collect_epoch_requests(
@@ -317,10 +327,11 @@ def _collect_epoch_requests(
     patch_size: float,
     prm_json: Optional[Dict[str, Any]],
     epoch_limit_minutes: Optional[int],
+    save_pth_weights: bool = False,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     requests: List[Dict[str, Any]] = []
     immediate_results: List[Dict[str, Any]] = []
-    base_nngpt_path = nngpt_dir
+    display_base = models_base_dir.resolve()
 
     for model_id in sorted(os.listdir(models_base_dir)):
         model_dir_path = models_base_dir / model_id
@@ -337,13 +348,13 @@ def _collect_epoch_requests(
         existing_result = _load_existing_success_result(model_dir_path)
         if existing_result is not None:
             print(
-                f"  [SKIP] {model_dir_path.relative_to(base_nngpt_path)} already evaluated "
+                f"  [SKIP] {_model_display_path(model_dir_path, display_base)} already evaluated "
                 f"({existing_result['accuracy'] * 100:.2f}%)"
             )
             immediate_results.append(existing_result)
             continue
 
-        print(f"\n--- Evaluating Model: {model_dir_path.relative_to(base_nngpt_path)} ---")
+        print(f"\n--- Evaluating Model: {_model_display_path(model_dir_path, display_base)} ---")
         if not verify_nn_code(model_dir_path, code_file_path):
             print(f"Code verification failed for {code_file_path}. Skipping evaluation.")
             (model_dir_path / "eval_verification_failed.txt").write_text(
@@ -458,6 +469,7 @@ def _collect_epoch_requests(
                 prefix_for_db=prefix_for_db,
                 epoch_limit_minutes=epoch_limit_minutes,
                 lemur_prefix=nn_name_prefix or orig_pref,
+                save_pth_weights=save_pth_weights,
             )
         )
 
@@ -498,7 +510,7 @@ def main(
     custom_synth_dir=CUSTOM_SYNTH_DIR,
     cycle=CYCLE,
     use_all_visible_gpus: Optional[bool] = None,
-    use_sequential: bool = True,
+    save_pth_weights: bool = False,
 ):
     base_nngpt_path = nngpt_dir
     if nn_alter_epochs is None:
@@ -565,85 +577,28 @@ def main(
                     patch_size=patch_size,
                     prm_json=prm_json,
                     epoch_limit_minutes=epoch_limit_minutes,
+                    save_pth_weights=save_pth_weights,
                 )
 
                 if requests:
-                    if use_sequential:
-                        # ── sequential in-process evaluation (old NNEval behavior) ──────
-                        from ab.gpt.util.Eval import Eval
-                        import traceback as tb
-                        import torch, gc
-
-                        for request in requests:
-                            model_id = request["model_id"]
-                            model_dir_path = Path(request["model_dir"])
-                            code_file_path = Path(request["code_file"])
-                            prm = dict(request["prm"])
-                            prm["batch"] = min(int(prm.get("batch", 16)), 16)
-                            print(f"  [MEMORY] Batch size capped at: {prm['batch']}")
-
-                            try:
-                                evaluator = Eval(
-                                    model_source_package=request["model_dir"],
-                                    task=request["task"],
-                                    dataset=request["dataset"],
-                                    metric=request["metric"],
-                                    prm=prm,
-                                    save_to_db=request["save_to_db"],
-                                    prefix=request.get("prefix"),
-                                    save_path=request.get("save_path"),
-                                )
-                                if request.get("epoch_limit_minutes"):
-                                    evaluator.epoch_limit_minutes = request["epoch_limit_minutes"]
-                                else:
-                                    evaluator.epoch_limit_minutes = 8
-
-                                eval_results = evaluator.evaluate(code_file_path)
-                                print(f"  Evaluation results for {model_id}: {eval_results}")
-
-                                result = {
-                                    "success": True,
-                                    "model_id": model_id,
-                                    "accuracy": eval_results[1] if isinstance(eval_results, tuple) else None,
-                                    "checksum": eval_results[0] if isinstance(eval_results, tuple) else None,
-                                    "eval_args": evaluator.get_args(),
-                                    "full_result": str(eval_results),
-                                }
-                                epoch_results.append(_write_success_outputs(request, result))
-
-                            except Exception as e:
-                                error_msg = f"{type(e).__name__}: {e}"
-                                print(f"  Error evaluating model {model_id}: {error_msg}")
-                                with open(model_dir_path / "error.txt", "w+") as f:
-                                    f.write(f"{error_msg}\n\n{tb.format_exc()}")
-                                epoch_results.append(_write_failure_outputs(
-                                    request,
-                                    {"error": error_msg, "traceback": tb.format_exc(), "is_oom": False}
-                                ))
-                            finally:
-                                torch.cuda.empty_cache()
-                                gc.collect()
-                                release_memory()
-                    else:
-                        # ── worker pool evaluation (new NNEval behavior, multi-GPU) ─────
-                        NNEvalWorkerPool.prewarm_nneval_workers(
-                            use_all_visible_gpus=resolved_use_all_visible_gpus,
-                            timeout_seconds=60.0,
-                        )
-                        entries = [{"payload": request} for request in requests]
-                        worker_results = NNEvalWorkerPool.evaluate_model_entries(
-                            entries,
-                            use_all_visible_gpus=resolved_use_all_visible_gpus,
-                        )
-                        for request, worker_result in zip(requests, worker_results):
-                            model_id = request["model_id"]
-                            if worker_result.get("success"):
-                                print(f"  Evaluation results for {model_id}: {worker_result}")
-                                epoch_results.append(_write_success_outputs(request, worker_result))
-                            else:
-                                print(f"  Error evaluating model {model_id}: {worker_result.get('error')}")
-                                epoch_results.append(_write_failure_outputs(request, worker_result))
-                            release_memory()
+                    NNEvalWorkerPool.prewarm_nneval_workers(
+                        use_all_visible_gpus=resolved_use_all_visible_gpus,
+                        timeout_seconds=60.0,
+                    )
+                    entries = [{"payload": request} for request in requests]
+                    worker_results = NNEvalWorkerPool.evaluate_model_entries(
+                        entries,
+                        use_all_visible_gpus=resolved_use_all_visible_gpus,
+                    )
+                    for request, worker_result in zip(requests, worker_results):
+                        model_id = request["model_id"]
+                        if worker_result.get("success"):
+                            print(f"  Evaluation results for {model_id}: {worker_result}")
+                            epoch_results.append(_write_success_outputs(request, worker_result))
+                        else:
+                            print(f"  Error evaluating model {model_id}: {worker_result.get('error')}")
+                            epoch_results.append(_write_failure_outputs(request, worker_result))
+                        release_memory()
 
                 # Rebuild cycle_results.json from the artifacts produced in this
                 # epoch directory after all worker results have been written.

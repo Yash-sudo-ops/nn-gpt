@@ -23,10 +23,7 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+from ab.nn.util.Const import out_dir
 
 try:
     from unsloth import FastLanguageModel
@@ -40,15 +37,16 @@ except ImportError as e:
         "Missing required package. Install: pip install unsloth[colab-new] trl datasets transformers"
     ) from e
 
-RAW_INPUT_PATH = SCRIPT_DIR / "data" / "llm_finetuning_data.jsonl"
-RAW_CSV_PATH = SCRIPT_DIR / "data" / "llm_finetuning_data.csv"
-PREP_OUTPUT_DIR = SCRIPT_DIR / "data"
-DEFAULT_TRAIN_PATH = PREP_OUTPUT_DIR / "train_llm_dataset.jsonl"
-DEFAULT_VAL_PATH = PREP_OUTPUT_DIR / "val_llm_dataset.jsonl"
-DEFAULT_TEST_PATH = PREP_OUTPUT_DIR / "test_llm_dataset.jsonl"
-DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "model2"
-DEFAULT_TEST_OUTPUT_PATH = PREP_OUTPUT_DIR / "test_predictions.csv"
-DEFAULT_TEST_METRICS_PATH = PREP_OUTPUT_DIR / "test_metrics.log"
+PRED_DIR = out_dir / "acc_predict"
+
+RAW_INPUT_PATH = PRED_DIR / "llm_finetuning_data.jsonl"
+RAW_CSV_PATH = PRED_DIR / "llm_finetuning_data.csv"
+DEFAULT_TRAIN_PATH = PRED_DIR / "train_llm_dataset.jsonl"
+DEFAULT_VAL_PATH = PRED_DIR / "val_llm_dataset.jsonl"
+DEFAULT_TEST_PATH = PRED_DIR / "test_llm_dataset.jsonl"
+DEFAULT_OUTPUT_DIR = PRED_DIR / "tuned_model"
+DEFAULT_TEST_OUTPUT_PATH = PRED_DIR / "test_predictions.csv"
+DEFAULT_TEST_METRICS_PATH = PRED_DIR / "test_metrics.log"
 TEST_MAX_NEW_TOKENS = 64
 TEST_TEMPERATURE = 0.0
 
@@ -666,7 +664,7 @@ def data_preprocessing(
 
 def prepare_llm_datasets(
     input_path: Path = RAW_INPUT_PATH,
-    output_dir: Path = PREP_OUTPUT_DIR,
+    output_dir: Path = PRED_DIR,
 ) -> tuple[Path, Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     if not input_path.exists():

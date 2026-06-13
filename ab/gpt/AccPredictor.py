@@ -37,16 +37,16 @@ except ImportError as e:
         "Missing required package. Install: pip install unsloth[colab-new] trl datasets transformers"
     ) from e
 
-PRED_DIR = out_dir / "acc_predict"
+ACC_DIR = out_dir / "acc_predict"
 
-RAW_INPUT_PATH = PRED_DIR / "llm_finetuning_data.jsonl"
-RAW_CSV_PATH = PRED_DIR / "llm_finetuning_data.csv"
-DEFAULT_TRAIN_PATH = PRED_DIR / "train_llm_dataset.jsonl"
-DEFAULT_VAL_PATH = PRED_DIR / "val_llm_dataset.jsonl"
-DEFAULT_TEST_PATH = PRED_DIR / "test_llm_dataset.jsonl"
-DEFAULT_OUTPUT_DIR = PRED_DIR / "tuned_model"
-DEFAULT_TEST_OUTPUT_PATH = PRED_DIR / "test_predictions.csv"
-DEFAULT_TEST_METRICS_PATH = PRED_DIR / "test_metrics.log"
+RAW_INPUT_PATH = ACC_DIR / "llm_finetuning_data.jsonl"
+RAW_CSV_PATH = ACC_DIR / "llm_finetuning_data.csv"
+DEFAULT_TRAIN_PATH = ACC_DIR / "train_llm_dataset.jsonl"
+DEFAULT_VAL_PATH = ACC_DIR / "val_llm_dataset.jsonl"
+DEFAULT_TEST_PATH = ACC_DIR / "test_llm_dataset.jsonl"
+DEFAULT_OUTPUT_DIR = ACC_DIR / "tuned_model"
+DEFAULT_TEST_OUTPUT_PATH = ACC_DIR / "test_predictions.csv"
+DEFAULT_TEST_METRICS_PATH = ACC_DIR / "test_metrics.log"
 TEST_MAX_NEW_TOKENS = 64
 TEST_TEMPERATURE = 0.0
 
@@ -664,7 +664,7 @@ def data_preprocessing(
 
 def prepare_llm_datasets(
     input_path: Path = RAW_INPUT_PATH,
-    output_dir: Path = PRED_DIR,
+    output_dir: Path = ACC_DIR,
 ) -> tuple[Path, Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     if not input_path.exists():

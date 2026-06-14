@@ -139,8 +139,8 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
 
     base_model_name = config["base_model_name"]
     llm_tune_epochs = int(config["num_epochs"])
-    use_deepspeed = config["use_deepspeed"]
-    only_best_accuracy = config["only_best_accuracy"]
+    use_deepspeed = config.get("use_deepspeed", False)
+    only_best_accuracy = config.get("only_best_accuracy", False)
     context_length = config.get("context_length")
     unsloth_max_input_length = config.get("max_input_length", None)
     use_unsloth = config.get("use_unsloth", False)

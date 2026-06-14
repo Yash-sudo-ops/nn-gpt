@@ -77,11 +77,11 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
         config = json.load(f)
 
     assert isinstance(config, dict)
-    token_from_file = config['token_from_file']
+    token_from_file = config.get('token_from_file', False)
     base_model_name = config['base_model_name']
     llm_tune_epochs = int(config['num_epochs'])
-    use_deepspeed = config['use_deepspeed']
-    only_best_accuracy = config['only_best_accuracy']
+    use_deepspeed = config.get('use_deepspeed', False)
+    only_best_accuracy = config.get('only_best_accuracy', False)
     context_length = config.get('context_length')
 
     access_token = None

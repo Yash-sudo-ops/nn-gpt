@@ -926,7 +926,7 @@ def tune(
         config = json.load(f)
     assert isinstance(config, dict)
 
-    token_from_file = config["token_from_file"]
+    token_from_file = config.get("token_from_file", False)
     base_model_name = config["base_model_name"]
     merged_candidate = nngpt_upload / Path(base_model_name).name
 
@@ -937,8 +937,8 @@ def tune(
         print(f"[EVOLUTION] Using base model from config: {base_model_name}")
 
     llm_tune_epochs = int(num_cycles) if num_cycles is not None else int(config["num_epochs"])
-    use_deepspeed = config["use_deepspeed"]
-    only_best_accuracy = config["only_best_accuracy"]
+    use_deepspeed = config.get("use_deepspeed", False)
+    only_best_accuracy = config.get("only_best_accuracy", False)
     context_length = config.get("context_length")
     unsloth_max_input_length = config.get("max_input_length", None)
     use_unsloth = config.get("use_unsloth", use_unsloth)

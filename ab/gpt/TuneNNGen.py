@@ -561,7 +561,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_agents', action='store_true', default=USE_AGENTS,
                         help='Enable LangGraph multi-agent workflow (default: False).')
     parser.add_argument('--use_predictor', action='store_true', default=USE_PREDICTOR,
-                        help='Enable predictor agent (requires --use_agents) (default: False).')
+                        help='Enable predictor agent.')
     parser.add_argument('--use_backbone', action='store_true', default=False,
                         help='Use backbone mode for code generation (default: False).')
     parser.add_argument('--classification_mode', action='store_true', default=False,

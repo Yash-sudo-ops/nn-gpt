@@ -28,6 +28,7 @@ def _parse_cycle(c: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "evaluated": int(b.get("evaluated_accuracies", gen)),
         "best": float(b.get("best_accuracy", 0.0) or 0.0),
         "avg": float(b.get("avg_accuracy", 0.0) or 0.0),
+        "effective_threshold": float(b.get("effective_threshold", 0.0) or 0.0),
         "new_desirable": new_des,
         "new_undesirable": int(b.get("new_undesirable", 0)),
         "not_novel": not_novel,
@@ -72,6 +73,63 @@ def load_cycles(results_path: Path, cycles_dir: Optional[Path]) -> List[Dict[str
     return [by_cycle[k] for k in sorted(by_cycle)]
 
 
+def _acc_from_eval_info(payload: Dict[str, Any]) -> Optional[float]:
+    """Pull accuracy from a per-model eval_info.json (eval_results may be tuple or dict)."""
+    res = payload.get("eval_results")
+    a = None
+    if isinstance(res, (list, tuple)) and len(res) >= 2:
+        a = res[1]
+    elif isinstance(res, dict):
+        a = res.get("accuracy", res.get("acc"))
+        if a is None:
+            eps = res.get("epochs", [])
+            if eps and isinstance(eps[0], dict):
+                a = eps[0].get("accuracy", eps[0].get("acc"))
+    try:
+        return float(a) if a is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def load_per_model_accuracies(cycles_dir: Optional[Path]) -> Dict[int, List[float]]:
+    """{cycle: [per-model accuracies]} from cycle_<n>/nneval/*/eval_info.json (if present)."""
+    accs: Dict[int, List[float]] = {}
+    if not cycles_dir or not cycles_dir.exists():
+        return accs
+    for cycle_dir in sorted(cycles_dir.glob("cycle_*")):
+        try:
+            n = int(cycle_dir.name.split("_")[1])
+        except (IndexError, ValueError):
+            continue
+        vals: List[float] = []
+        for info in (cycle_dir / "nneval").glob("*/eval_info.json"):
+            try:
+                a = _acc_from_eval_info(json.loads(info.read_text(encoding="utf-8")))
+            except Exception:  # noqa: BLE001
+                a = None
+            if a is not None:
+                vals.append(a)
+        if vals:
+            accs[n] = vals
+    return accs
+
+
+def apply_pass_average(cycles: List[Dict[str, Any]], per_model: Dict[int, List[float]],
+                       run_threshold: float) -> None:
+    """Redefine 'avg' as the mean over models that cleared the threshold (card-style).
+
+    Uses per-model eval_info.json when available (corrects already-finished runs);
+    otherwise leaves the stored avg untouched.
+    """
+    for r in cycles:
+        accs = per_model.get(r["cycle"])
+        if not accs:
+            continue
+        thr = r["effective_threshold"] or run_threshold
+        passed = [a for a in accs if a >= thr]
+        r["avg"] = (sum(passed) / len(passed)) if passed else float("nan")
+
+
 def _line_plot(xs, ys, title, ylabel, label, color, path, ylim=None) -> Path:
     """One image, one plotted line (single legend entry)."""
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -89,8 +147,9 @@ def plot_separate(cycles: List[Dict[str, Any]], out_dir: Path) -> List[Path]:
     xs = [r["cycle"] for r in cycles]
     paths = [
         _line_plot(xs, [r["avg"] * 100 for r in cycles],
-                   "Average Accuracy per Cycle", "Accuracy (%)", "Average accuracy",
-                   "#ff7f0e", out_dir / "kto_avg_accuracy.png"),
+                   "Average Accuracy per Cycle (models ≥ threshold)", "Accuracy (%)",
+                   "Average accuracy (≥ threshold)", "#ff7f0e",
+                   out_dir / "kto_avg_accuracy.png"),
         _line_plot(xs, [r["best"] * 100 for r in cycles],
                    "Best Accuracy per Cycle", "Accuracy (%)", "Best accuracy",
                    "#1f77b4", out_dir / "kto_best_accuracy.png"),
@@ -152,6 +211,19 @@ def main() -> None:
     cycles = load_cycles(results_path, cycles_dir)
     if not cycles:
         raise SystemExit("No cycles with metrics found in the results file.")
+
+    # Average accuracy is reported over models that cleared the threshold (card-style).
+    try:
+        run_threshold = float(json.loads(results_path.read_text()).get("accuracy_threshold", 0.40))
+    except Exception:  # noqa: BLE001
+        run_threshold = 0.40
+    per_model = load_per_model_accuracies(cycles_dir)
+    if per_model:
+        apply_pass_average(cycles, per_model, run_threshold)
+    else:
+        print("[plot][warn] no per-model eval_info.json found — 'avg' uses the stored "
+              "metric (above-threshold only if produced by the updated pipeline).")
+
     figs = plot_separate(cycles, out_dir)
     csv_path = save_csv(cycles, out_dir)
 

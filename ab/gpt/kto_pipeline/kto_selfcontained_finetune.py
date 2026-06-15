@@ -540,7 +540,11 @@ class SelfContainedKTOPipeline:
         n_und_total = (n_und_compile + n_und_runtime + n_und_lowacc
                        + n_und_notnovel + n_und_unparseable)
         best_acc = max(accuracies) if accuracies else 0.0
-        avg_acc = (sum(accuracies) / len(accuracies)) if accuracies else 0.0
+        # Card-style avg: mean over models that cleared the threshold. Keep the
+        # all-valid mean as a secondary field.
+        passed_accs = [a for a in accuracies if a >= eff_threshold]
+        avg_acc = (sum(passed_accs) / len(passed_accs)) if passed_accs else 0.0
+        avg_acc_all = (sum(accuracies) / len(accuracies)) if accuracies else 0.0
 
         stats = {
             "new_desirable": n_desirable,
@@ -556,6 +560,7 @@ class SelfContainedKTOPipeline:
             "evaluated_accuracies": len(accuracies),
             "best_accuracy": best_acc,
             "avg_accuracy": avg_acc,
+            "avg_accuracy_all": avg_acc_all,
             "effective_threshold": eff_threshold,
             "desirable_total": len(self.desirable),
             "undesirable_total": len(self.undesirable),
@@ -570,7 +575,8 @@ class SelfContainedKTOPipeline:
         logger.info(f"      not novel            : {n_und_notnovel}")
         logger.info(f"      unparseable          : {n_und_unparseable}")
         logger.info(f"  skipped (no signal)      : {n_skipped}")
-        logger.info(f"  best/avg acc this cycle  : {best_acc*100:.2f}% / {avg_acc*100:.2f}%")
+        logger.info(f"  best / avg(>=thr) / avg(all): {best_acc*100:.2f}% / "
+                    f"{avg_acc*100:.2f}% / {avg_acc_all*100:.2f}%")
         logger.info(f"  effective threshold      : {eff_threshold*100:.2f}% ({self.threshold_mode})")
         logger.info(f"  cumulative desirable     : {len(self.desirable)}")
         logger.info(f"  cumulative undesirable   : {len(self.undesirable)}")

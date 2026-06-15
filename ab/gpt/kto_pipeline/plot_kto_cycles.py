@@ -147,6 +147,8 @@ def plot_overview(cycles: List[Dict[str, Any]], per_model: Dict[int, List[float]
 
     # Panel B: generation outcome rates per cycle
     b = ax[0][1]
+    b.plot(xs, [100 * r["evaluated"] / r["generated"] for r in cycles], "P-",
+           color="#17becf", label="Valid (compiled+trained)")
     b.plot(xs, [100 * r["new_desirable"] / r["generated"] for r in cycles], "o-",
            color="#2ca02c", label="Desirable (pass+novel)")
     b.plot(xs, [100 * r["pass_acc"] / r["generated"] for r in cycles], "s-",

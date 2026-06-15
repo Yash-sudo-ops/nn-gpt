@@ -5,7 +5,6 @@ import gc
 import random
 import torch.nn.functional as F
 import torch.utils.checkpoint as cp
-from torch.nn import MaxPool2d
 
 # -------------------------------------------------
 # AMP helpers
@@ -38,26 +37,48 @@ def _drop_path_choice(num_active, loc_drop_prob, glob_drop_ratio, training):
 
 
 # -------------------------------------------------
+# Pool/Unpool helper  [MaxUnpool2d FIX]
+# -------------------------------------------------
+class PoolUnpool(nn.Module):
+    """MaxPool that stores indices, then MaxUnpool that restores spatial size.
+
+    A bare nn.MaxUnpool2d cannot live inside nn.Sequential because it needs the
+    indices (and output size) from a paired nn.MaxPool2d(return_indices=True).
+    This module pairs them so the element is runnable and size-preserving.
+    """
+    def __init__(self, kernel_size=3, stride=2, padding=0):
+        super().__init__()
+        self.pool = nn.MaxPool2d(kernel_size, stride, padding, return_indices=True)
+        self.unpool = nn.MaxUnpool2d(kernel_size, stride, padding)
+
+    def forward(self, x):
+        in_size = x.shape
+        x, idx = self.pool(x)
+        x = self.unpool(x, idx, output_size=in_size)
+        return x
+
+
+# -------------------------------------------------
 # Main Conv Block
 # -------------------------------------------------
-def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0, element_list=None, block_type=0):
-    if block_type == 0:
-        return MultiBranchConvBlock(in_channels, out_channels, stride, padding, bias, dropout_prob, element_list)
+def drop_conv3x3_block(in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0, column_idx=0):
+    # Deterministic, column-indexed choice (FractalNet-faithful):
+    # each column keeps one consistent block type all the way down, so drop-path
+    # keeps/drops a coherent structure. Even columns -> MultiBranch, odd -> SecondColumn.
+    if column_idx % 2 == 0:
+        return MultiBranchConvBlock(in_channels, out_channels, stride, padding, bias, dropout_prob)
     else:
-        return SecondColumnBlock(in_channels, out_channels, stride, padding, bias, dropout_prob, element_list)
+        return SecondColumnBlock(in_channels, out_channels, stride, padding, bias, dropout_prob)
 
 
 # -------------------------------------------------
 # Multi-branch block
 # -------------------------------------------------
 class MultiBranchConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0, element_list=None):
+    def __init__(self, in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):
         super().__init__()
 
         self.in_pr = (nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False) if in_channels != out_channels else nn.Identity())
-        self.element_list = element_list  # [BUG 2 FIX] 
-        self.dropout_prob = dropout_prob  # [BUG C FIX] 
-
         # ----- Branch 1 -----
         self.branch1 = nn.Sequential(
             nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias),
@@ -66,7 +87,7 @@ class MultiBranchConvBlock(nn.Module):
 
         # ----- Branch 2 -----
         self.branch2 = nn.Sequential(
-            
+            nn.MaxPool2d(kernel_size=3, stride=2)
         )
 
     def _fix_size(self, x, target):
@@ -85,13 +106,10 @@ class MultiBranchConvBlock(nn.Module):
 # Second Column Block
 # -------------------------------------------------
 class SecondColumnBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0, element_list=None):
+    def __init__(self, in_channels, out_channels, stride=1, padding=1, bias=False, dropout_prob=0.0):
         super().__init__()
 
         self.in_pr = (nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False) if in_channels != out_channels else nn.Identity())
-        self.element_list = element_list  # [BUG 2 FIX] 
-        self.dropout_prob = dropout_prob  # [BUG C FIX]
-
         self.main = nn.Sequential(
             nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias)
         )
@@ -111,12 +129,11 @@ class SecondColumnBlock(nn.Module):
 # Fractal Block
 # -------------------------------------------------
 class FractalBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, num_columns, loc_drop_prob, dropout_prob, glob_drop_ratio=0.5, element_list=None):  # [BUG 1 FIX] | [BUG 2 FIX] 
+    def __init__(self, in_channels, out_channels, num_columns, loc_drop_prob, dropout_prob, glob_drop_ratio=0.5):  # [BUG 1 FIX] added glob_drop_ratio
         super().__init__()
         self.num_columns = int(num_columns)
         self.loc_drop_prob = float(loc_drop_prob)
-        self.glob_drop_ratio = float(glob_drop_ratio)  # [BUG 1 FIX] 
-        self.element_list = element_list  # [BUG 2 FIX] 
+        self.glob_drop_ratio = float(glob_drop_ratio)  # [BUG 1 FIX] store glob_drop_ratio
         depth = 2 ** max(self.num_columns - 1, 0)
         blocks = []
         for i in range(depth):
@@ -124,9 +141,9 @@ class FractalBlock(nn.Module):
             for j in range(self.num_columns):
                 if (i + 1) % (2 ** j) == 0:
                     in_ch_ij = in_channels if (i + 1 == 2 ** j) else out_channels
-                    block_type = 1  # [BUG 4 FIX] 
+                    # Deterministic column-indexed block choice (no generator switch needed)
                     level.append(
-                        drop_conv3x3_block(in_ch_ij,out_channels,stride=1,padding=1,bias=False,dropout_prob=dropout_prob,element_list=self.element_list,block_type=block_type)  # [BUG 2 FIX] 
+                        drop_conv3x3_block(in_ch_ij,out_channels,stride=1,padding=1,bias=False,dropout_prob=dropout_prob,column_idx=j)
                     )
                 else:
                     level.append(nn.Identity())
@@ -139,7 +156,7 @@ class FractalBlock(nn.Module):
         for level in self.blocks:
             new_outs = outs.copy()
 
-            # [BUG 1 FIX] 
+            # [BUG 1 FIX] collect active column indices alongside outputs
             active_indices = []
             for col_idx, blk in enumerate(level):
                 inp = outs[col_idx]
@@ -151,7 +168,7 @@ class FractalBlock(nn.Module):
                 if not isinstance(blk, nn.Identity):
                     active_indices.append(col_idx)
 
-            # [BUG 1 FIX] 
+            # [BUG 1 FIX] apply drop-path before merging
             if len(active_indices) > 1:
                 kept_indices = _drop_path_choice(
                     num_active=len(active_indices),
@@ -174,11 +191,11 @@ class FractalBlock(nn.Module):
 # Fractal Unit
 # -------------------------------------------------
 class FractalUnit(nn.Module):
-    def __init__(self, in_channels, out_channels, num_columns, loc_drop_prob, dropout_prob, glob_drop_ratio=0.5, element_list=None):  # [BUG 1 FIX] | [BUG 2 FIX] 
+    def __init__(self, in_channels, out_channels, num_columns, loc_drop_prob, dropout_prob, glob_drop_ratio=0.5):  # [BUG 1 FIX] added glob_drop_ratio
         super().__init__()
         self.block = FractalBlock(
             in_channels, out_channels, num_columns,
-            loc_drop_prob, dropout_prob, glob_drop_ratio, element_list  # [BUG 1 FIX]| [BUG 2 FIX]
+            loc_drop_prob, dropout_prob, glob_drop_ratio  # [BUG 1 FIX] pass glob_drop_ratio
         )
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
         self.use_checkpoint_whole = False
@@ -194,22 +211,20 @@ class FractalUnit(nn.Module):
 # Network
 # -------------------------------------------------
 class Net(nn.Module):
-    param_count_threshold: int = 80_000_000
 
     def __init__(self, in_shape, out_shape, prm, device):
         super().__init__()
         self.device = device
-        self.glob_drop_ratio = 0.5   # [BUG 1 FIX]
-        self.loc_drop_prob = 0.15    # [BUG 1 FIX]
+        self.glob_drop_ratio = 0.5   # [BUG 1 FIX] now actually passed down
+        self.loc_drop_prob = 0.15    # [BUG 1 FIX] now actually passed down
         self.use_amp = False
         self.use_checkpoint = False
 
-        self.param_count_threshold = int(prm.get("param_count_threshold", self.param_count_threshold))
+        self.param_count_threshold = int(prm.get("param_count_threshold", 80_000_000))
 
         # -------- FILLED BY GENERATOR --------
         N = 1
         num_columns = 1
-        element_list = ['Conv2d', 'MaxPool2d', 'BatchNorm2d', 'ReLU', 'Dropout2d']
 
         dropout_prob = float(prm["dropout"])
         self.fractal_fn(
@@ -219,7 +234,6 @@ class Net(nn.Module):
             in_shape=in_shape,
             out_shape=out_shape,
             device=device,
-            element_list=element_list,
         )
 
         # Adapt precision & checkpointing
@@ -253,19 +267,15 @@ class Net(nn.Module):
     def _norm4d(x):
         if x.dim() == 4:
             return x
-        if x.dim() == 5:
-            B, T, C, H, W = x.shape
-            return x.reshape(B * T, C, H, W)
         raise ValueError(f"Invalid input shape {x.shape}")
 
     # -------------------------------------------------
     # Builder
     # -------------------------------------------------
-    def fractal_fn(self, N, num_columns, dropout_prob, in_shape, out_shape, device, element_list):
+    def fractal_fn(self, N, num_columns, dropout_prob, in_shape, out_shape, device):
         self.N = int(N)
         self.num_columns = int(num_columns)
         self.dropout_prob = float(dropout_prob)
-        self.element_list = element_list
 
         C, H, W = self._parse_in_shape(in_shape)
 
@@ -282,8 +292,7 @@ class Net(nn.Module):
                 self.num_columns,
                 self.loc_drop_prob,
                 dropout_probs[i],
-                self.glob_drop_ratio,  # [BUG 1 FIX] 
-                self.element_list,     # [BUG 2 FIX] 
+                self.glob_drop_ratio,  # [BUG 1 FIX] pass glob_drop_ratio
             )
             self.features.add_module(f"unit{i + 1}", unit)
             in_channels = out_channels
@@ -311,14 +320,10 @@ class Net(nn.Module):
             self.to(x.device)
 
         x = x.to(torch.float32)
-        B = x.shape[0]           # [BUG F FIX] 
-        was_5d = x.dim() == 5    # [BUG F FIX]
         x = self._norm4d(x)
         x = self.features(x)
         x = torch.flatten(x, 1)
         x = self.output(x)
-        if was_5d:
-            x = x.view(B, -1, x.shape[-1])  # [BUG F FIX]
         return x
 
     # ---------- training setup ----------
@@ -334,7 +339,7 @@ class Net(nn.Module):
 
     # ---------- learning loop ----------
     def learn(self, train_data):
-        if not hasattr(self, 'criterion') or not hasattr(self, 'optimizer'):  # [BUG G FIX]
+        if not hasattr(self, 'criterion') or not hasattr(self, 'optimizer'):  # [BUG G FIX] guard against calling learn() without train_setup()
             raise RuntimeError("train_setup() must be called before learn()")
         self.train()
         scaler = self._scaler

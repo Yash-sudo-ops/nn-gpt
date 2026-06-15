@@ -1,0 +1,32 @@
+[
+    {
+        "accuracy": 0.376,
+        "batch": 64,
+        "best_accuracy": 0.376,
+        "best_epoch": 1,
+        "cpu_count": 20,
+        "cpu_type": "x86_64",
+        "cpu_usage_percent": 0.0,
+        "dropout": 0.2,
+        "duration": 251379971070,
+        "epoch": 1,
+        "gpu_memory_kb": 7531016.0,
+        "gpu_memory_usage_percent": 0.57,
+        "gpu_total_memory_kb": 24696064.0,
+        "gpu_type": "NVIDIA GeForce RTX 3090",
+        "gradient_norm": 2.9999992568384615,
+        "lr": 0.01,
+        "metric_acc": 0.376,
+        "momentum": 0.9,
+        "occupied_gpu_memory_kb": 140820.5,
+        "occupied_ram_kb": 23093464.0,
+        "ram_usage_percent": 71.0,
+        "samples_per_second": 198.9023875902364,
+        "test_loss": 1.8392134555585824,
+        "total_ram_kb": 32545884.0,
+        "train_accuracy": 0.38328,
+        "train_loss": 1.839864593942452,
+        "transform": "norm_256_flip",
+        "uid": "58c87f2f5b5b0787cccdd42d2bcb8de8"
+    }
+]

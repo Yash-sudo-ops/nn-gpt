@@ -428,7 +428,7 @@ class SelfContainedKTOPipeline:
         n_und_compile = 0
         n_und_runtime = 0
         n_und_lowacc = 0
-        n_und_notnovel = 0
+        n_not_novel = 0
         n_und_unparseable = 0
         n_skipped = 0
         accuracies: List[float] = []
@@ -521,11 +521,12 @@ class SelfContainedKTOPipeline:
                 n_und_lowacc += 1
                 continue
 
-            # passed the accuracy bar → require novelty
+            # passed the accuracy bar → novel ones become desirable; exact
+            # duplicates of already-accepted architectures are skipped (dedup),
+            # NOT penalised as undesirable (they cleared the bar — they're good).
             is_novel = self.novelty_checker.is_novel(code, model_id) if self.novelty_check else True
             if not is_novel:
-                add_undesirable(_fenced(code), model_id, "not_novel", accuracy)
-                n_und_notnovel += 1
+                n_not_novel += 1
                 continue
 
             add_desirable(code, model_id, accuracy)
@@ -538,7 +539,7 @@ class SelfContainedKTOPipeline:
         self.novelty_checker.save_cache()
 
         n_und_total = (n_und_compile + n_und_runtime + n_und_lowacc
-                       + n_und_notnovel + n_und_unparseable)
+                       + n_und_unparseable)
         best_acc = max(accuracies) if accuracies else 0.0
         # Card-style avg: mean over models that cleared the threshold. Keep the
         # all-valid mean as a secondary field.
@@ -553,9 +554,9 @@ class SelfContainedKTOPipeline:
                 "non_compiling": n_und_compile,
                 "runtime_error": n_und_runtime,
                 "low_accuracy": n_und_lowacc,
-                "not_novel": n_und_notnovel,
                 "unparseable": n_und_unparseable,
             },
+            "not_novel_skipped": n_not_novel,
             "skipped_no_signal": n_skipped,
             "evaluated_accuracies": len(accuracies),
             "best_accuracy": best_acc,
@@ -572,8 +573,8 @@ class SelfContainedKTOPipeline:
         logger.info(f"      non-compiling        : {n_und_compile}")
         logger.info(f"      runtime error        : {n_und_runtime}")
         logger.info(f"      low accuracy         : {n_und_lowacc}")
-        logger.info(f"      not novel            : {n_und_notnovel}")
         logger.info(f"      unparseable          : {n_und_unparseable}")
+        logger.info(f"  ~ not novel (skipped)    : {n_not_novel}")
         logger.info(f"  skipped (no signal)      : {n_skipped}")
         logger.info(f"  best / avg(>=thr) / avg(all): {best_acc*100:.2f}% / "
                     f"{avg_acc*100:.2f}% / {avg_acc_all*100:.2f}%")

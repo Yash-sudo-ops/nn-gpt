@@ -21,7 +21,7 @@ def _parse_cycle(c: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     bd = b.get("undesirable_breakdown", {})
     gen = int(c.get("generated", 0)) or 1
     new_des = int(b.get("new_desirable", 0))
-    not_novel = int(bd.get("not_novel", 0))
+    not_novel = int(b.get("not_novel_skipped", bd.get("not_novel", 0)))
     return {
         "cycle": int(c.get("cycle", 0)),
         "generated": gen,

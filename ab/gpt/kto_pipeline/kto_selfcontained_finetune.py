@@ -402,6 +402,47 @@ class SelfContainedKTOPipeline:
         logger.info(f"[cycle {cycle}] evaluation done: {n_succ}/{len(eval_by_id)} trained successfully")
         return eval_by_id
 
+    # ── stage 2b: skip eval of duplicates (novelty is structural, no GPU needed) ─
+
+    def _prefilter_novelty(self, cycle: int, nneval_dir: Path,
+                           generation_records: List[Dict[str, Any]]) -> int:
+        """Flag generations that duplicate an already-accepted design and exclude
+        them from evaluation. Novelty is decided from the code alone, so there's no
+        point spending GPU on duplicates that won't enter training. Flagged records
+        get new_nn.py moved aside (so NNEval ignores them) and are counted as
+        not_novel_skipped in bucketing. Idempotent across resumes via the moved file.
+        """
+        if not self.novelty_check:
+            return 0
+        n = 0
+        for rec in generation_records:
+            if not rec.get("ok"):
+                continue
+            model_dir = nneval_dir / rec.get("model_id", "")
+            nn_file = model_dir / "new_nn.py"
+            aside = model_dir / "new_nn.notnovel.py"
+            if aside.exists() and not nn_file.exists():
+                rec["not_novel"] = True  # already filtered on a prior run
+                n += 1
+                continue
+            if not nn_file.exists():
+                continue
+            try:
+                code = nn_file.read_text(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                continue
+            if not self.novelty_checker.is_novel(code, rec.get("model_id")):
+                rec["not_novel"] = True
+                try:
+                    nn_file.rename(aside)
+                except Exception:  # noqa: BLE001
+                    pass
+                n += 1
+        if n:
+            logger.info(f"[cycle {cycle}] novelty pre-filter: skipping eval of {n} "
+                        "duplicate architecture(s) already accepted in earlier cycles")
+        return n
+
     # ── stage 3: bucketing into desirable / undesirable ─────────────────────────
 
     def bucket_models(
@@ -468,6 +509,11 @@ class SelfContainedKTOPipeline:
         for rec in generation_records:
             model_id = rec.get("model_id")
             model_dir = nneval_dir / model_id
+
+            # Duplicate of an already-accepted design — pre-filtered before eval.
+            if rec.get("not_novel"):
+                n_not_novel += 1
+                continue
 
             # ── unparseable generation: salvage raw text as a hard negative ──
             if not rec.get("ok"):
@@ -708,6 +754,7 @@ class SelfContainedKTOPipeline:
         logger.info("#" * 80)
 
         nneval_dir, gen_records = self.generate_models(cycle)
+        self._prefilter_novelty(cycle, nneval_dir, gen_records)
         eval_by_id = self.evaluate_models(cycle, nneval_dir)
         # Release any CUDA memory the in-process evaluator held before the KTO
         # training subprocess loads the 7B model.

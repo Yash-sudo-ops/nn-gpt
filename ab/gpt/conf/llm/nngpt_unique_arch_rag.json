@@ -1,5 +1,3 @@
 {
-    "base_model_name": "ABrain/NNGPT-UniqueArch-Rag",
-    "num_epochs": 5,
-    "context_length": 4096
+  "base_model_name": "ABrain/NNGPT-UniqueArch-Rag"
 }

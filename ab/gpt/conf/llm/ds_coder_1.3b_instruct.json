@@ -1,4 +1,3 @@
 {
-  "base_model_name": "deepseek-ai/deepseek-coder-1.3b-instruct",
-  "num_epochs": 100
+  "base_model_name": "deepseek-ai/deepseek-coder-1.3b-instruct"
 }

@@ -1,5 +1,3 @@
 {
-    "base_model_name": "open-r1/OlympicCoder-7B",
-    "num_epochs": 2,
-    "context_length": 256
+  "base_model_name": "open-r1/OlympicCoder-7B"
 }

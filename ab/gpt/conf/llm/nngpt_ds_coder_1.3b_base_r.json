@@ -1,5 +1,3 @@
 {
-  "base_model_name": "ABrain/HPGPT-DeepSeek-Coder-1.3b-Base-R",
-  "num_epochs": 100,
-  "context_length": null
+  "base_model_name": "ABrain/HPGPT-DeepSeek-Coder-1.3b-Base-R"
 }

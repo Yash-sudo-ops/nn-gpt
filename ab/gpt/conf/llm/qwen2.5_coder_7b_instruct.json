@@ -1,5 +1,3 @@
 {
-  "base_model_name": "Qwen/Qwen2.5-Coder-7B-Instruct",
-  "num_epochs": 22,
-  "context_length": 32768
+  "base_model_name": "Qwen/Qwen2.5-Coder-7B-Instruct"
 }

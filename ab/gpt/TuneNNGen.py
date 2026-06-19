@@ -158,7 +158,8 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          min_selected_k=15, fallback_threshold=0.35, adaptive_threshold=False,
          novelty_check=True, resume_from_cycle=None, max_retries=3, use_optimized_training=True,
          use_agents=USE_AGENTS, use_predictor=USE_PREDICTOR, use_backbone=False,
-         classification_mode=False):
+         classification_mode=False, context_length=None, max_input_length=None,
+         only_best_accuracy=False, load_in_4bit=True):
 
     persist_llm_conf(llm_conf, enable_merge)
 
@@ -351,6 +352,10 @@ use_backbone={use_backbone}, enable_merge={enable_merge}, classification_mode={c
             enable_merge=enable_merge,
             classification_mode=classification_mode,
             use_backbone=use_backbone,
+            context_length=context_length,
+            max_input_length=max_input_length,
+            only_best_accuracy=only_best_accuracy,
+            load_in_4bit=load_in_4bit,
         )
 
         # Normal completion - auto merge best
@@ -494,6 +499,8 @@ if __name__ == '__main__':
                         help=f'Config of LLM (default: {LLM_CONF}).')
 
     # Training configuration
+    parser.add_argument('--num_cycles', type=int, default=None,
+                        help='Number of outer generate/eval/SFT cycles (default: 100).')
     parser.add_argument('-n', '--test_nn', type=int, default=TEST_NN,
                         help=f'Count of NNs to generate (default: {TEST_NN}).')
     parser.add_argument('--nn_train_epochs', type=int, default=NN_TRAIN_EPOCHS,
@@ -566,6 +573,10 @@ if __name__ == '__main__':
                         help='Use backbone mode for code generation (default: False).')
     parser.add_argument('--classification_mode', action='store_true', default=False,
                         help='Enable classification-only mode (default: False).')
+    parser.add_argument('--context_length', type=int, default=None,
+                        help='Model context length override (default: derived from model registry).')
+    parser.add_argument('--max_input_length', type=int, default=None,
+                        help='Unsloth max input length override (default: derived from model registry).')
 
     args = parser.parse_args()
 

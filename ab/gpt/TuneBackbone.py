@@ -10,7 +10,7 @@ def main():
     parser.add_argument('--llm_conf', type=str, default='backbone_sft_config.json', help='LLM config file name')
     parser.add_argument('--test_nn', type=int, default=30, help='Number of NNs to generate')
     parser.add_argument('--num_train_epochs', type=int, default=5, help='Number of LLM fine-tuning epochs')
-    parser.add_argument('--num_cycles', type=int, default=None, help='Number of generate/eval/SFT cycles; defaults to llm config num_epochs')
+    parser.add_argument('--num_cycles', type=int, default=20, help='Number of generate/eval/SFT cycles (default: 20)')
     parser.add_argument('--nn_train_epochs', type=int, default=1, help='Number of training epochs for generated NNs')
     parser.add_argument('--sft_nn_prefixes', type=str, default='rl-bb-test1', help='Comma-separated NN prefixes used as SFT training data')
     parser.add_argument('--gen_nn_prefix', type=str, default='rl-bb-test1', help='NN prefix for generated/evaluated models')
@@ -61,6 +61,8 @@ def main():
         # max_prompts=1000,
         max_new_tokens=2048,
         use_backbone=True,
+        only_best_accuracy=True,
+        load_in_4bit=False,
         sft_nn_prefixes=args.sft_nn_prefixes,
         num_cycles=args.num_cycles,
         temperature=0.8

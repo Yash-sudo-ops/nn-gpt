@@ -918,6 +918,10 @@ def tune(
     use_backbone=False,
     sft_nn_prefixes=None,
     num_cycles=None,
+    context_length=None,
+    max_input_length=None,
+    only_best_accuracy=False,
+    load_in_4bit=True,
 ):
     if not isinstance(conf_keys, (list, tuple)):
         conf_keys = (conf_keys,)
@@ -926,7 +930,6 @@ def tune(
         config = json.load(f)
     assert isinstance(config, dict)
 
-    token_from_file = config.get("token_from_file", False)
     base_model_name = config["base_model_name"]
     merged_candidate = nngpt_upload / Path(base_model_name).name
 
@@ -936,19 +939,15 @@ def tune(
     else:
         print(f"[EVOLUTION] Using base model from config: {base_model_name}")
 
-    llm_tune_epochs = int(num_cycles) if num_cycles is not None else int(config["num_epochs"])
-    use_deepspeed = config.get("use_deepspeed", False)
-    only_best_accuracy = config.get("only_best_accuracy", False)
-    context_length = config.get("context_length")
-    unsloth_max_input_length = config.get("max_input_length", None)
-    use_unsloth = config.get("use_unsloth", use_unsloth)
-    unsloth_load_in_4bit = config.get("load_in_4bit", True)
-    use_backbone = config.get("backbone", use_backbone)
-
+    llm_tune_epochs = int(num_cycles) if num_cycles is not None else 100
+    if context_length is None and max_input_length is None:
+        context_length, max_input_length = get_model_context(base_model_name)
+    unsloth_max_input_length = max_input_length
+    _flags = get_model_flags(base_model_name)
+    use_unsloth = _flags.get("use_unsloth", use_unsloth)
+    unsloth_load_in_4bit = _flags.get("load_in_4bit", load_in_4bit)
+    use_deepspeed = False
     access_token = None
-    if token_from_file:
-        with open(ab_root_path / "token") as f:
-            access_token = f.readline()
 
     print(
         f'[DEBUG]Argument Information:\nSkip generation until Epoch: {skip_epoch}\nPath to saved LoRA Layers: {llm_path}')

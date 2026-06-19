@@ -1,4 +1,3 @@
 {
-    "base_model_name": "deepseek-ai/deepseek-coder-6.7b-instruct",
-    "context_length": 4096
+    "base_model_name": "deepseek-ai/deepseek-coder-6.7b-instruct"
 }

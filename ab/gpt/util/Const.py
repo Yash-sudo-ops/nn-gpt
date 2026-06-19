@@ -51,6 +51,31 @@ default_huggingface_cache = huggingface_cache
 default_huggingface_tokenizer_cache = huggingface_tokenizer_cache
 
 
+_MODEL_CONTEXT: dict[str, tuple[int | None, int | None]] = {
+    "open-r1/OlympicCoder-7B":                     (8192, 8192),
+    "deepseek-ai/deepseek-coder-7b-instruct-v1.5": (8192, None),
+    "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B":       (4096, None),
+    "deepseek-ai/deepseek-coder-6.7b-instruct":    (4096, 4096),
+    "ABrain/HPGPT-DeepSeek-R1-Distill-Qwen-7B-R":  (4096, None),
+    "ABrain/NNGPT-UniqueArch-Rag":                  (4096, None),
+    "unsloth/gpt-oss-20b":                         (4600, 1600),
+    "Qwen/Qwen2.5-Coder-7B-Instruct":              (32768, None),
+    "mistralai/Mistral-7B-Instruct-v0.3":           (4096, None),
+}
+
+def get_model_context(base_model_name: str) -> tuple[int | None, int | None]:
+    return _MODEL_CONTEXT.get(base_model_name, (None, None))
+
+
+_MODEL_FLAGS: dict[str, dict] = {
+    "unsloth/gpt-oss-20b":                      {"use_unsloth": True,  "load_in_4bit": True},
+    "deepseek-ai/deepseek-coder-6.7b-instruct": {"use_unsloth": False, "load_in_4bit": False},
+}
+
+def get_model_flags(base_model_name: str) -> dict:
+    return _MODEL_FLAGS.get(base_model_name, {})
+
+
 def model_dir(base):
     return base / 'llm'
 

@@ -59,6 +59,7 @@ def main():
         training_args=training_args,
         peft_config=peft_config,
         # max_prompts=1000,
+        max_new_tokens=2048,
         use_backbone=True,
         sft_nn_prefixes=args.sft_nn_prefixes,
         num_cycles=args.num_cycles,

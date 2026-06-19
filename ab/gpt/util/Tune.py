@@ -943,7 +943,6 @@ def tune(
     unsloth_max_input_length = config.get("max_input_length", None)
     use_unsloth = config.get("use_unsloth", use_unsloth)
     unsloth_load_in_4bit = config.get("load_in_4bit", True)
-    max_new_tokens = config.get("max_new_tokens", max_new_tokens)
     use_backbone = config.get("backbone", use_backbone)
 
     access_token = None

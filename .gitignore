@@ -16,12 +16,15 @@ iterative_pipeline.log
 .gitignore
 *.egg-info/
 unsloth_compiled_cache/
+
+# Run artifacts (do not commit)
 **/checkpoint-*
 **/tokenizer/
 output.log
 stat/
 db/
 path/
+test/
 *.safetensors
 ab/gpt/brute/ga/modular/FracStats/
 ab/gpt/brute/ga/modular/Fractals/
@@ -29,3 +32,8 @@ ab/gpt/util/Testing.py
 ab/gpt/nn
 ab/nn
 .cache/*
+Findings/
+slurm_nngpt_kto_*.sh
+nngpt.def
+.claude/
+Experiment_Metrics/

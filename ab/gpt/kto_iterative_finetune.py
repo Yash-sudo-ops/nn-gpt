@@ -601,8 +601,8 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Iterative KTO Fine-Tuning Pipeline")
-    parser.add_argument("--llm_conf", type=str, required=True,
-                        help="LLM configuration JSON (e.g., ds_coder_1.3b_instruct.json)")
+    parser.add_argument("--llm_conf", type=str, default="nngpt_unique_arch_rag.json",
+                        help="LLM config JSON (default: nngpt_unique_arch_rag.json → ABrain model)")
     parser.add_argument("--cycles", type=int, default=21,
                         help="Number of fine-tuning cycles (default: 21)")
     parser.add_argument("--models_per_cycle", type=int, default=150,

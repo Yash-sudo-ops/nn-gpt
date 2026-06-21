@@ -402,6 +402,47 @@ class SelfContainedKTOPipeline:
         logger.info(f"[cycle {cycle}] evaluation done: {n_succ}/{len(eval_by_id)} trained successfully")
         return eval_by_id
 
+    # ── stage 2b: skip eval of duplicates (novelty is structural, no GPU needed) ─
+
+    def _prefilter_novelty(self, cycle: int, nneval_dir: Path,
+                           generation_records: List[Dict[str, Any]]) -> int:
+        """Flag generations that duplicate an already-accepted design and exclude
+        them from evaluation. Novelty is decided from the code alone, so there's no
+        point spending GPU on duplicates that won't enter training. Flagged records
+        get new_nn.py moved aside (so NNEval ignores them) and are counted as
+        not_novel_skipped in bucketing. Idempotent across resumes via the moved file.
+        """
+        if not self.novelty_check:
+            return 0
+        n = 0
+        for rec in generation_records:
+            if not rec.get("ok"):
+                continue
+            model_dir = nneval_dir / rec.get("model_id", "")
+            nn_file = model_dir / "new_nn.py"
+            aside = model_dir / "new_nn.notnovel.py"
+            if aside.exists() and not nn_file.exists():
+                rec["not_novel"] = True  # already filtered on a prior run
+                n += 1
+                continue
+            if not nn_file.exists():
+                continue
+            try:
+                code = nn_file.read_text(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                continue
+            if not self.novelty_checker.is_novel(code, rec.get("model_id")):
+                rec["not_novel"] = True
+                try:
+                    nn_file.rename(aside)
+                except Exception:  # noqa: BLE001
+                    pass
+                n += 1
+        if n:
+            logger.info(f"[cycle {cycle}] novelty pre-filter: skipping eval of {n} "
+                        "duplicate architecture(s) already accepted in earlier cycles")
+        return n
+
     # ── stage 3: bucketing into desirable / undesirable ─────────────────────────
 
     def bucket_models(
@@ -428,7 +469,7 @@ class SelfContainedKTOPipeline:
         n_und_compile = 0
         n_und_runtime = 0
         n_und_lowacc = 0
-        n_und_notnovel = 0
+        n_not_novel = 0
         n_und_unparseable = 0
         n_skipped = 0
         accuracies: List[float] = []
@@ -468,6 +509,11 @@ class SelfContainedKTOPipeline:
         for rec in generation_records:
             model_id = rec.get("model_id")
             model_dir = nneval_dir / model_id
+
+            # Duplicate of an already-accepted design — pre-filtered before eval.
+            if rec.get("not_novel"):
+                n_not_novel += 1
+                continue
 
             # ── unparseable generation: salvage raw text as a hard negative ──
             if not rec.get("ok"):
@@ -521,11 +567,12 @@ class SelfContainedKTOPipeline:
                 n_und_lowacc += 1
                 continue
 
-            # passed the accuracy bar → require novelty
+            # passed the accuracy bar → novel ones become desirable; exact
+            # duplicates of already-accepted architectures are skipped (dedup),
+            # NOT penalised as undesirable (they cleared the bar — they're good).
             is_novel = self.novelty_checker.is_novel(code, model_id) if self.novelty_check else True
             if not is_novel:
-                add_undesirable(_fenced(code), model_id, "not_novel", accuracy)
-                n_und_notnovel += 1
+                n_not_novel += 1
                 continue
 
             add_desirable(code, model_id, accuracy)
@@ -538,9 +585,13 @@ class SelfContainedKTOPipeline:
         self.novelty_checker.save_cache()
 
         n_und_total = (n_und_compile + n_und_runtime + n_und_lowacc
-                       + n_und_notnovel + n_und_unparseable)
+                       + n_und_unparseable)
         best_acc = max(accuracies) if accuracies else 0.0
-        avg_acc = (sum(accuracies) / len(accuracies)) if accuracies else 0.0
+        # Card-style avg: mean over models that cleared the threshold. Keep the
+        # all-valid mean as a secondary field.
+        passed_accs = [a for a in accuracies if a >= eff_threshold]
+        avg_acc = (sum(passed_accs) / len(passed_accs)) if passed_accs else 0.0
+        avg_acc_all = (sum(accuracies) / len(accuracies)) if accuracies else 0.0
 
         stats = {
             "new_desirable": n_desirable,
@@ -549,13 +600,14 @@ class SelfContainedKTOPipeline:
                 "non_compiling": n_und_compile,
                 "runtime_error": n_und_runtime,
                 "low_accuracy": n_und_lowacc,
-                "not_novel": n_und_notnovel,
                 "unparseable": n_und_unparseable,
             },
+            "not_novel_skipped": n_not_novel,
             "skipped_no_signal": n_skipped,
             "evaluated_accuracies": len(accuracies),
             "best_accuracy": best_acc,
             "avg_accuracy": avg_acc,
+            "avg_accuracy_all": avg_acc_all,
             "effective_threshold": eff_threshold,
             "desirable_total": len(self.desirable),
             "undesirable_total": len(self.undesirable),
@@ -567,10 +619,11 @@ class SelfContainedKTOPipeline:
         logger.info(f"      non-compiling        : {n_und_compile}")
         logger.info(f"      runtime error        : {n_und_runtime}")
         logger.info(f"      low accuracy         : {n_und_lowacc}")
-        logger.info(f"      not novel            : {n_und_notnovel}")
         logger.info(f"      unparseable          : {n_und_unparseable}")
+        logger.info(f"  ~ not novel (skipped)    : {n_not_novel}")
         logger.info(f"  skipped (no signal)      : {n_skipped}")
-        logger.info(f"  best/avg acc this cycle  : {best_acc*100:.2f}% / {avg_acc*100:.2f}%")
+        logger.info(f"  best / avg(>=thr) / avg(all): {best_acc*100:.2f}% / "
+                    f"{avg_acc*100:.2f}% / {avg_acc_all*100:.2f}%")
         logger.info(f"  effective threshold      : {eff_threshold*100:.2f}% ({self.threshold_mode})")
         logger.info(f"  cumulative desirable     : {len(self.desirable)}")
         logger.info(f"  cumulative undesirable   : {len(self.undesirable)}")
@@ -701,6 +754,7 @@ class SelfContainedKTOPipeline:
         logger.info("#" * 80)
 
         nneval_dir, gen_records = self.generate_models(cycle)
+        self._prefilter_novelty(cycle, nneval_dir, gen_records)
         eval_by_id = self.evaluate_models(cycle, nneval_dir)
         # Release any CUDA memory the in-process evaluator held before the KTO
         # training subprocess loads the 7B model.

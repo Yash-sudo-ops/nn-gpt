@@ -13,7 +13,6 @@ out/
 .vscode/settings.json
 curation_output/
 iterative_pipeline.log
-.gitignore
 *.egg-info/
 unsloth_compiled_cache/
 
@@ -22,9 +21,8 @@ unsloth_compiled_cache/
 **/tokenizer/
 output.log
 stat/
-db/
+/db/
 path/
-test/
 *.safetensors
 ab/gpt/brute/ga/modular/FracStats/
 ab/gpt/brute/ga/modular/Fractals/

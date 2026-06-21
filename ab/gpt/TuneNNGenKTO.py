@@ -8,15 +8,17 @@ KTODataManager has written the cycle's kto_train.jsonl.
 Two ways to invoke:
 
   1. Per-cycle fine-tune (called by KTOIterativeFinetuner):
-       python -m ab.gpt.TuneNNGenKTO \\
-           --llm_conf nngpt_unique_arch_rag.json \\
-           --kto_data_file out/kto_pipeline/cycle_3/chat_data_cycle_3/kto_train.jsonl \\
-           --peft out/kto_pipeline/cycle_2/checkpoint \\
-           --kto_beta 0.1 ...
+       python -m ab.gpt.TuneNNGenKTO \
+           --llm_conf nngpt_unique_arch_rag.json \
+           --kto_data_file out/kto_pipeline/cycle_3/chat_data_cycle_3/kto_train.jsonl \
+           --peft out/kto_pipeline/cycle_2/checkpoint \
+           --kto_beta 0.1
+           ...
 
   2. Full iterative pipeline:
-       python -m ab.gpt.TuneNNGenKTO --run_iterative_pipeline \\
-           --llm_conf nngpt_unique_arch_rag.json --cycles 21 ...
+       python -m ab.gpt.TuneNNGenKTO --run_iterative_pipeline \
+           --llm_conf nngpt_unique_arch_rag.json --cycles 21
+           ...
        (Delegates to KTOIterativeFinetuner; same CLI as the iterative
         module itself.)
 

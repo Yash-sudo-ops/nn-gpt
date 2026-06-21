@@ -81,12 +81,13 @@ class MultiBranchConvBlock(nn.Module):
         self.in_pr = (nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False) if in_channels != out_channels else nn.Identity())
         # ----- Branch 1 -----
         self.branch1 = nn.Sequential(
-            _BRANCH_1
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias),
+        nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias)
         )
 
         # ----- Branch 2 -----
         self.branch2 = nn.Sequential(
-            _BRANCH_2
+            
         )
 
     def _fix_size(self, x, target):
@@ -110,7 +111,7 @@ class SecondColumnBlock(nn.Module):
 
         self.in_pr = (nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False) if in_channels != out_channels else nn.Identity())
         self.main = nn.Sequential(
-            _SEC_
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=padding, bias=bias)
         )
 
     def _fix_size(self, x, target):
@@ -222,8 +223,8 @@ class Net(nn.Module):
         self.param_count_threshold = int(prm.get("param_count_threshold", 80_000_000))
 
         # -------- FILLED BY GENERATOR --------
-        N = ?1
-        num_columns = ?2
+        N = 1
+        num_columns = 1
 
         dropout_prob = float(prm["dropout"])
         self.fractal_fn(

@@ -322,6 +322,16 @@ def _collect_epoch_requests(
     immediate_results: List[Dict[str, Any]] = []
     base_nngpt_path = nngpt_dir
 
+    def _display_model_path(path: Path) -> Path:
+        """
+        Return a stable display path for logs without assuming the model path
+        is always inside out/nngpt (mobile iterative flow uses curation_output).
+        """
+        try:
+            return path.relative_to(base_nngpt_path)
+        except ValueError:
+            return path
+
     for model_id in sorted(os.listdir(models_base_dir)):
         model_dir_path = models_base_dir / model_id
         if not model_dir_path.is_dir():
@@ -337,13 +347,13 @@ def _collect_epoch_requests(
         existing_result = _load_existing_success_result(model_dir_path)
         if existing_result is not None:
             print(
-                f"  [SKIP] {model_dir_path.relative_to(base_nngpt_path)} already evaluated "
+                f"  [SKIP] {_display_model_path(model_dir_path)} already evaluated "
                 f"({existing_result['accuracy'] * 100:.2f}%)"
             )
             immediate_results.append(existing_result)
             continue
 
-        print(f"\n--- Evaluating Model: {model_dir_path.relative_to(base_nngpt_path)} ---")
+        print(f"\n--- Evaluating Model: {_display_model_path(model_dir_path)} ---")
         if not verify_nn_code(model_dir_path, code_file_path):
             print(f"Code verification failed for {code_file_path}. Skipping evaluation.")
             (model_dir_path / "eval_verification_failed.txt").write_text(

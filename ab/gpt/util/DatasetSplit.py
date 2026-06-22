@@ -6,11 +6,7 @@ from typing import Any, Optional
 TRAIN_VAL_TEST_PROTOCOL = "trainvaltest"
 
 
-def normalize_split_protocol(_raw: Any = None) -> str:
-    return TRAIN_VAL_TEST_PROTOCOL
-
-
-def stratified_721_indices(targets: Any, *, seed: int = 42) -> tuple[list[int], list[int], list[int]]:
+def stratified_trainvaltest_indices(targets: Any, *, seed: int = 42) -> tuple[list[int], list[int], list[int]]:
     by_class: dict[int, list[int]] = {}
     for index, target in enumerate(list(targets)):
         by_class.setdefault(int(target), []).append(int(index))
@@ -35,7 +31,7 @@ def stratified_721_indices(targets: Any, *, seed: int = 42) -> tuple[list[int], 
     return train_indices, val_indices, test_indices
 
 
-def split_existing_dataset_721(
+def split_existing_dataset_trainvaltest(
     train_source: Any,
     *,
     seed: int = 42,
@@ -47,9 +43,9 @@ def split_existing_dataset_721(
     if targets is None:
         targets = getattr(train_source, "labels", None)
     if targets is None:
-        raise ValueError("Cannot build 7/2/1 split: dataset has no targets/labels attribute")
+        raise ValueError("Cannot build trainvaltest split: dataset has no targets/labels attribute")
 
-    train_indices, val_indices, test_indices = stratified_721_indices(
+    train_indices, val_indices, test_indices = stratified_trainvaltest_indices(
         targets,
         seed=int(seed),
     )

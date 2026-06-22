@@ -671,7 +671,7 @@ def _evaluate_epoch(
                 print(f"Error running evaluation main(): {e}", flush=True)
             print('Folder data reload will occur next epoch.')
         else:
-            eval_cuda_visible_devices = os.getenv(_EVAL_CUDA_VISIBLE_DEVICES_ENV, "").strip()
+            eval_cuda_visible_devices = os.getenv("CUDA_VISIBLE_DEVICES", "").strip()
             if eval_cuda_visible_devices:
                 env = os.environ.copy()
                 env["CUDA_VISIBLE_DEVICES"] = eval_cuda_visible_devices

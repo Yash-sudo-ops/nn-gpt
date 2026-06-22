@@ -2482,7 +2482,6 @@ def _build_cifar10_loaders(cfg: "EvalConfig") -> Tuple[DataLoader, DataLoader]:
         train_transform=train_transform,
         eval_transform=val_transform,
         download=cfg.download,
-        protocol=getattr(cfg, "split_protocol", "official"),
         seed=int(getattr(cfg, "split_seed", 42)),
     )
     eval_split_role = str(getattr(cfg, "eval_split_role", "reward_eval") or "reward_eval")
@@ -2531,7 +2530,7 @@ class EvalConfig:
     val_subset_size: int = 0
     data_root: str = "data_v2"
     download: bool = True
-    split_protocol: str = "official"
+    split_protocol: str = DatasetSplit.TRAIN_VAL_TEST_PROTOCOL
     split_seed: int = 42
     eval_split_role: str = "reward_eval"
     # Optional efficiency logging
@@ -2757,9 +2756,7 @@ def _restore_nn_dataset_dataroll_patch(patch_token: Optional[Tuple[type, Any, An
 
 
 def _patch_nn_dataset_load_dataset_for_reward(cfg: "EvalConfig") -> Optional[Dict[str, Any]]:
-    split_protocol = DatasetSplit.normalize_split_protocol(getattr(cfg, "split_protocol", "official"))
-    if split_protocol == "official":
-        return None
+    split_protocol = DatasetSplit.TRAIN_VAL_TEST_PROTOCOL
 
     try:
         import ab.nn.util.Loader as nn_loader  # type: ignore
@@ -3299,7 +3296,7 @@ def _formal_eval_with_nn_dataset(
         "epoch_limit_minutes": epoch_limit_minutes,
         "formal_reward_epochs": list(formal_reward_epochs),
         "formal_reward_max_epoch": int(formal_reward_max_epoch),
-        "split_protocol": DatasetSplit.normalize_split_protocol(getattr(cfg, "split_protocol", "official")),
+        "split_protocol": DatasetSplit.TRAIN_VAL_TEST_PROTOCOL,
         "split_seed": int(getattr(cfg, "split_seed", 42)),
         "eval_split_role": str(getattr(cfg, "eval_split_role", "reward_eval") or "reward_eval"),
     }
@@ -4312,7 +4309,7 @@ def _loader_cache_key(cfg: EvalConfig) -> Tuple[Any, ...]:
         cfg.val_subset_size,
         cfg.data_root,
         cfg.download,
-        DatasetSplit.normalize_split_protocol(getattr(cfg, "split_protocol", "official")),
+        DatasetSplit.TRAIN_VAL_TEST_PROTOCOL,
         int(getattr(cfg, "split_seed", 42)),
         str(getattr(cfg, "eval_split_role", "reward_eval") or "reward_eval"),
         bool(getattr(cfg, "full_test_acc", False)),

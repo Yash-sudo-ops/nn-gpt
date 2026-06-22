@@ -141,23 +141,20 @@ def resolve_sft_formal_out_shape(dataset: str | None = None) -> tuple[int, ...]:
     return (resolve_sft_formal_n_classes(dataset),)
 
 
-def _normalize_sft_eval_split_protocol(split_protocol: str | None) -> str:
-    normalized = str(split_protocol or "").strip().lower().replace("-", "").replace("_", "").replace(" ", "")
-    if normalized in {"721", "7/2/1", "trainvaltest"}:
-        return "trainvaltest"
-    return "official"
+def _normalize_sft_eval_split_protocol(_split_protocol: str | None = None) -> str:
+    return "trainvaltest"
 
 
 def _describe_sft_eval_split(formal_dataset: str, split_protocol: str) -> tuple[str, str, str]:
     dataset = normalize_sft_formal_dataset(formal_dataset)
-    if _normalize_sft_eval_split_protocol(split_protocol) == "trainvaltest":
-        if dataset == "cifar-10":
-            return "cifar10-train[45k]", "cifar10-train[5k]", "cifar10-test[10k]"
-        if dataset == "cifar-100":
-            return "cifar100-train[45k]", "cifar100-train[5k]", "cifar100-test[10k]"
-        if dataset == "imagenette":
-            return "imagenette-train[7500]", "imagenette-train[1969]", "imagenette-test[3925]"
-    return "official-train", "official-test", "none"
+    _normalize_sft_eval_split_protocol(split_protocol)
+    if dataset == "cifar-10":
+        return "cifar10-train[45k]", "cifar10-train[5k]", "cifar10-test[10k]"
+    if dataset == "cifar-100":
+        return "cifar100-train[45k]", "cifar100-train[5k]", "cifar100-test[10k]"
+    if dataset == "imagenette":
+        return "imagenette-train[7500]", "imagenette-train[1969]", "imagenette-test[3925]"
+    raise ValueError(f"Unsupported formal dataset: {formal_dataset!r}")
 
 
 def _stage1_fixed_failure_reward(res: Dict[str, Any], meta: Dict[str, Any], graph_info) -> Optional[float]:
@@ -830,7 +827,7 @@ def _write_sft_run_config(
         "NNGPT_SFT_EPOCH_ROOT",
         "NNGPT_SFT_APPEND_LOGS",
     ]
-    split_protocol = _env_str("NNGPT_SFT_EVAL_SPLIT_PROTOCOL", SFT_EVAL_SPLIT_PROTOCOL)
+    split_protocol = SFT_EVAL_SPLIT_PROTOCOL
     split_seed = _env_int("NNGPT_SFT_EVAL_SPLIT_SEED", SFT_EVAL_SPLIT_SEED)
     eval_split_role = _env_str("NNGPT_SFT_EVAL_SPLIT_ROLE", SFT_EVAL_SPLIT_ROLE)
     formal_dataset = resolve_sft_formal_dataset()
@@ -1488,7 +1485,7 @@ def build_sft_reward_eval_cfg(
         val_subset_size=SFT_EVAL_VAL_SUBSET,
         data_root=SFT_EVAL_DATA_ROOT,
         download=SFT_EVAL_DOWNLOAD,
-        split_protocol=_env_str("NNGPT_SFT_EVAL_SPLIT_PROTOCOL", SFT_EVAL_SPLIT_PROTOCOL),
+        split_protocol=SFT_EVAL_SPLIT_PROTOCOL,
         split_seed=_env_int("NNGPT_SFT_EVAL_SPLIT_SEED", SFT_EVAL_SPLIT_SEED),
         eval_split_role=_env_str("NNGPT_SFT_EVAL_SPLIT_ROLE", SFT_EVAL_SPLIT_ROLE),
         measure_latency=getattr(cfg, "measure_latency", True),
@@ -2420,13 +2417,13 @@ def main() -> None:
     formal_out_shape = resolve_sft_formal_out_shape(formal_dataset)
     train_set_label, reward_eval_label, heldout_test_label = _describe_sft_eval_split(
         formal_dataset,
-        _env_str("NNGPT_SFT_EVAL_SPLIT_PROTOCOL", SFT_EVAL_SPLIT_PROTOCOL),
+        SFT_EVAL_SPLIT_PROTOCOL,
     )
     print(
         f"[SFT RL] Eval plan: stage1=static_only(no-check_nn), stage2/3=nn-dataset-formal({formal_dataset}), "
         f"out_shape={formal_out_shape}, n_classes={formal_out_shape[0]}, "
         f"transform={SFT_EVAL_TRANSFORM}, resize={SFT_EVAL_IMAGE_SIZE}, batch={SFT_EVAL_BATCH_SIZE}, "
-        f"split={_env_str('NNGPT_SFT_EVAL_SPLIT_PROTOCOL', SFT_EVAL_SPLIT_PROTOCOL)}, "
+        f"split={SFT_EVAL_SPLIT_PROTOCOL}, "
         f"split_seed={_env_int('NNGPT_SFT_EVAL_SPLIT_SEED', SFT_EVAL_SPLIT_SEED)}, "
         f"eval_split_role={_env_str('NNGPT_SFT_EVAL_SPLIT_ROLE', SFT_EVAL_SPLIT_ROLE)}, "
         f"train_set={train_set_label}, "

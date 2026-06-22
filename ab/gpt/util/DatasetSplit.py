@@ -4,16 +4,10 @@ import random
 from typing import Any, Optional
 
 TRAIN_VAL_TEST_PROTOCOL = "trainvaltest"
-OFFICIAL_PROTOCOL = "official"
 
 
-def normalize_split_protocol(raw: Any) -> str:
-    normalized = str(raw or OFFICIAL_PROTOCOL).strip().lower().replace("-", "").replace("_", "").replace(" ", "")
-    if normalized == "official":
-        return OFFICIAL_PROTOCOL
-    if normalized in {"721", "7/2/1", "trainvaltest"}:
-        return TRAIN_VAL_TEST_PROTOCOL
-    return OFFICIAL_PROTOCOL
+def normalize_split_protocol(_raw: Any = None) -> str:
+    return TRAIN_VAL_TEST_PROTOCOL
 
 
 def stratified_721_indices(targets: Any, *, seed: int = 42) -> tuple[list[int], list[int], list[int]]:
@@ -61,7 +55,7 @@ def split_existing_dataset_721(
     )
     eval_dataset = eval_source if eval_source is not None else train_source
     return {
-        "protocol": "721",
+        "protocol": TRAIN_VAL_TEST_PROTOCOL,
         "seed": int(seed),
         "train": Subset(train_source, train_indices),
         "reward_eval": Subset(eval_dataset, val_indices),
@@ -95,7 +89,6 @@ def build_classification_reward_split_datasets(
     train_size: int,
     val_size: int,
     seed: int = 42,
-    protocol: str = TRAIN_VAL_TEST_PROTOCOL,
 ) -> dict[str, Any]:
     train_subset, val_subset = split_train_val_dataset(
         train_source,
@@ -104,7 +97,7 @@ def build_classification_reward_split_datasets(
         seed=int(seed),
     )
     return {
-        "protocol": normalize_split_protocol(protocol),
+        "protocol": TRAIN_VAL_TEST_PROTOCOL,
         "seed": int(seed),
         "train": train_subset,
         "reward_eval": val_subset,
@@ -146,61 +139,40 @@ def build_cifar10_split_datasets(
     train_transform: Any,
     eval_transform: Any,
     download: bool,
-    protocol: str = OFFICIAL_PROTOCOL,
     seed: int = 42,
 ) -> dict[str, Any]:
     from torch.utils.data import Subset
     from torchvision import datasets
 
-    split_protocol = normalize_split_protocol(protocol)
-    if split_protocol == TRAIN_VAL_TEST_PROTOCOL:
-        train_source = datasets.CIFAR10(
-            root=root,
-            train=True,
-            download=download,
-            transform=train_transform,
-        )
-        eval_source = datasets.CIFAR10(
-            root=root,
-            train=True,
-            download=download,
-            transform=eval_transform,
-        )
-        train_subset, val_subset = split_train_val_dataset(
-            train_source,
-            train_size=45000,
-            val_size=5000,
-            seed=int(seed),
-        )
-        return {
-            "protocol": TRAIN_VAL_TEST_PROTOCOL,
-            "seed": int(seed),
-            "train": train_subset,
-            "reward_eval": Subset(eval_source, list(getattr(val_subset, "indices", []))),
-            "heldout_test": datasets.CIFAR10(
-                root=root,
-                train=False,
-                download=download,
-                transform=eval_transform,
-            ),
-        }
-
+    train_source = datasets.CIFAR10(
+        root=root,
+        train=True,
+        download=download,
+        transform=train_transform,
+    )
+    eval_source = datasets.CIFAR10(
+        root=root,
+        train=True,
+        download=download,
+        transform=eval_transform,
+    )
+    train_subset, val_subset = split_train_val_dataset(
+        train_source,
+        train_size=45000,
+        val_size=5000,
+        seed=int(seed),
+    )
     return {
-        "protocol": OFFICIAL_PROTOCOL,
+        "protocol": TRAIN_VAL_TEST_PROTOCOL,
         "seed": int(seed),
-        "train": datasets.CIFAR10(
-            root=root,
-            train=True,
-            download=download,
-            transform=train_transform,
-        ),
-        "reward_eval": datasets.CIFAR10(
+        "train": train_subset,
+        "reward_eval": Subset(eval_source, list(getattr(val_subset, "indices", []))),
+        "heldout_test": datasets.CIFAR10(
             root=root,
             train=False,
             download=download,
             transform=eval_transform,
         ),
-        "heldout_test": None,
     }
 
 
@@ -238,61 +210,40 @@ def build_cifar100_split_datasets(
     train_transform: Any,
     eval_transform: Any,
     download: bool,
-    protocol: str = OFFICIAL_PROTOCOL,
     seed: int = 42,
 ) -> dict[str, Any]:
     from torch.utils.data import Subset
     from torchvision import datasets
 
-    split_protocol = normalize_split_protocol(protocol)
-    if split_protocol == TRAIN_VAL_TEST_PROTOCOL:
-        train_source = datasets.CIFAR100(
-            root=root,
-            train=True,
-            download=download,
-            transform=train_transform,
-        )
-        eval_source = datasets.CIFAR100(
-            root=root,
-            train=True,
-            download=download,
-            transform=eval_transform,
-        )
-        train_subset, val_subset = split_train_val_dataset(
-            train_source,
-            train_size=45000,
-            val_size=5000,
-            seed=int(seed),
-        )
-        return {
-            "protocol": TRAIN_VAL_TEST_PROTOCOL,
-            "seed": int(seed),
-            "train": train_subset,
-            "reward_eval": Subset(eval_source, list(getattr(val_subset, "indices", []))),
-            "heldout_test": datasets.CIFAR100(
-                root=root,
-                train=False,
-                download=download,
-                transform=eval_transform,
-            ),
-        }
-
+    train_source = datasets.CIFAR100(
+        root=root,
+        train=True,
+        download=download,
+        transform=train_transform,
+    )
+    eval_source = datasets.CIFAR100(
+        root=root,
+        train=True,
+        download=download,
+        transform=eval_transform,
+    )
+    train_subset, val_subset = split_train_val_dataset(
+        train_source,
+        train_size=45000,
+        val_size=5000,
+        seed=int(seed),
+    )
     return {
-        "protocol": OFFICIAL_PROTOCOL,
+        "protocol": TRAIN_VAL_TEST_PROTOCOL,
         "seed": int(seed),
-        "train": datasets.CIFAR100(
-            root=root,
-            train=True,
-            download=download,
-            transform=train_transform,
-        ),
-        "reward_eval": datasets.CIFAR100(
+        "train": train_subset,
+        "reward_eval": Subset(eval_source, list(getattr(val_subset, "indices", []))),
+        "heldout_test": datasets.CIFAR100(
             root=root,
             train=False,
             download=download,
             transform=eval_transform,
         ),
-        "heldout_test": None,
     }
 
 

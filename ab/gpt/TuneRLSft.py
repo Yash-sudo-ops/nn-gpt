@@ -143,15 +143,7 @@ def resolve_sft_formal_out_shape(dataset: str | None = None) -> tuple[int, ...]:
 
 def _normalize_sft_eval_split_protocol(split_protocol: str | None) -> str:
     normalized = str(split_protocol or "").strip().lower().replace("-", "").replace("_", "").replace(" ", "")
-    if normalized in {
-        "721",
-        "7/2/1",
-        "702010",
-        "70/20/10",
-        "trainval",
-        "trainvaltest",
-        "trainvaltestsplit",
-    }:
+    if normalized in {"721", "7/2/1", "trainvaltest"}:
         return "trainvaltest"
     return "official"
 

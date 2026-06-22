@@ -9,23 +9,9 @@ OFFICIAL_PROTOCOL = "official"
 
 def normalize_split_protocol(raw: Any) -> str:
     normalized = str(raw or OFFICIAL_PROTOCOL).strip().lower().replace("-", "").replace("_", "").replace(" ", "")
-    if normalized in {"official", "offical"}:
+    if normalized == "official":
         return OFFICIAL_PROTOCOL
-    if normalized in {
-        "721",
-        "7/2/1",
-        "702010",
-        "70/20/10",
-        "trainval",
-        "trainvaltest",
-        "trainvaltestsplit",
-        "trainvaltestprotocol",
-        "trainvaltestsplitprotocol",
-        "45k5k",
-        "90/10",
-        "45/5",
-        "7500/1969",
-    }:
+    if normalized in {"721", "7/2/1", "trainvaltest"}:
         return TRAIN_VAL_TEST_PROTOCOL
     return OFFICIAL_PROTOCOL
 

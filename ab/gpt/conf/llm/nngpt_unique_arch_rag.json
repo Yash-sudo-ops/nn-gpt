@@ -1,3 +1,4 @@
 {
-  "base_model_name": "ABrain/NNGPT-UniqueArch-Rag"
+  "base_model_name": "ABrain/NNGPT-UniqueArch-Rag",
+  "default_context_length": 4096
 }

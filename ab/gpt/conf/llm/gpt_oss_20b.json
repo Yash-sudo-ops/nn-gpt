@@ -1,3 +1,4 @@
 {
-  "base_model_name": "unsloth/gpt-oss-20b"
+  "base_model_name": "unsloth/gpt-oss-20b",
+  "default_context_length": 4600
 }

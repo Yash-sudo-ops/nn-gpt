@@ -140,12 +140,9 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
 
     base_model_name = config["base_model_name"]
     llm_tune_epochs = int(num_cycles) if num_cycles is not None else 100
-    if context_length is None and max_input_length is None:
-        context_length, max_input_length = get_model_context(base_model_name)
     unsloth_max_input_length = max_input_length
-    _flags = get_model_flags(base_model_name)
-    use_unsloth = _flags.get("use_unsloth", False)
-    unsloth_load_in_4bit = _flags.get("load_in_4bit", load_in_4bit)
+    use_unsloth = False
+    unsloth_load_in_4bit = load_in_4bit
 
     use_deepspeed = False
     access_token = None

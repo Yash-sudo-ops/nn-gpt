@@ -3,7 +3,8 @@ import json
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import PeftModel, LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import os
-from ab.gpt.util.Const import get_model_context
+
+_CONTEXT_LENGTH = 4096
 
 def _load_model_config():
     """Load model_config.json from the same directory. Raises error if missing."""
@@ -12,8 +13,7 @@ def _load_model_config():
         raise FileNotFoundError(f"[Config] model_config.json not found at {config_path}. Please create it.")
     with open(config_path, "r") as f:
         config = json.load(f)
-    context_length, _ = get_model_context(config["base_model_name"])
-    config["context_length"] = context_length or 4096
+    config["context_length"] = _CONTEXT_LENGTH
     print(f"[Config] Loaded model_config.json  (context_length={config['context_length']})")
     return config
 

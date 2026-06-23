@@ -29,7 +29,6 @@ from ab.gpt.util.Const import (
     transformer_file,
     huggingface_cache,
     huggingface_tokenizer_cache,
-    get_model_context,
 )
 
 from ab.gpt.util.LLMUtil import quantization_config_4bit
@@ -81,8 +80,6 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
     assert isinstance(config, dict)
     base_model_name = config['base_model_name']
     llm_tune_epochs = int(num_cycles) if num_cycles is not None else 100
-    if context_length is None:
-        context_length, _ = get_model_context(base_model_name)
 
     use_deepspeed = False
     access_token = None

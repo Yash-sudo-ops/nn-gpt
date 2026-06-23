@@ -203,6 +203,8 @@ def tune(test_nn, nn_train_epochs, skip_epoch, llm_path, llm_tune_conf, nn_gen_c
 
     base_model_name          = config['base_model_name']
     llm_tune_epochs          = int(num_cycles) if num_cycles is not None else 100
+    if context_length is None:
+        context_length = config.get("default_context_length")
     use_deepspeed            = False
     unsloth_max_input_length = None
     unsloth_load_in_4bit     = load_in_4bit

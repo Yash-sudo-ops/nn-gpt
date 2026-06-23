@@ -940,6 +940,8 @@ def tune(
         print(f"[EVOLUTION] Using base model from config: {base_model_name}")
 
     llm_tune_epochs = int(num_cycles) if num_cycles is not None else 100
+    if context_length is None:
+        context_length = config.get("default_context_length")
     unsloth_max_input_length = max_input_length
     unsloth_load_in_4bit = load_in_4bit
     use_deepspeed = False

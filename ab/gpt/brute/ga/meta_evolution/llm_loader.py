@@ -4,8 +4,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import PeftModel, LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import os
 
-_CONTEXT_LENGTH = 4096
-
 def _load_model_config():
     """Load model_config.json from the same directory. Raises error if missing."""
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_config.json")
@@ -13,7 +11,7 @@ def _load_model_config():
         raise FileNotFoundError(f"[Config] model_config.json not found at {config_path}. Please create it.")
     with open(config_path, "r") as f:
         config = json.load(f)
-    config["context_length"] = _CONTEXT_LENGTH
+    config["context_length"] = config.get("default_context_length", 4096)
     print(f"[Config] Loaded model_config.json  (context_length={config['context_length']})")
     return config
 

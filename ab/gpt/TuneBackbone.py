@@ -63,6 +63,7 @@ def main():
         use_backbone=True,
         only_best_accuracy=True,
         load_in_4bit=False,
+        context_length=4096,
         sft_nn_prefixes=args.sft_nn_prefixes,
         num_cycles=args.num_cycles,
         temperature=0.8

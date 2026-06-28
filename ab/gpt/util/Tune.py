@@ -986,6 +986,10 @@ def tune(
     sft_nn_prefixes=None,
     sft_dataset=None,
     num_cycles=None,
+    context_length=None,
+    max_input_length=None,
+    only_best_accuracy=False,
+    load_in_4bit=True,
     epoch_root=None,
 ):
     if not isinstance(conf_keys, (list, tuple)):
@@ -995,7 +999,6 @@ def tune(
         config = json.load(f)
     assert isinstance(config, dict)
 
-    token_from_file = config["token_from_file"]
     base_model_name = config["base_model_name"]
     merged_candidate = nngpt_upload / Path(base_model_name).name
 
@@ -1005,21 +1008,14 @@ def tune(
     else:
         print(f"[EVOLUTION] Using base model from config: {base_model_name}")
 
-    llm_tune_epochs = int(num_cycles) if num_cycles is not None else int(config["num_epochs"])
-    use_deepspeed = config["use_deepspeed"]
-    only_best_accuracy = config["only_best_accuracy"]
-    context_length = config.get("context_length")
-    unsloth_max_input_length = config.get("max_input_length", None)
-    use_unsloth = config.get("use_unsloth", use_unsloth)
-    unsloth_load_in_4bit = config.get("load_in_4bit", True)
-    max_new_tokens = config.get("max_new_tokens", max_new_tokens)
-    use_backbone = config.get("backbone", use_backbone)
+    llm_tune_epochs = int(num_cycles) if num_cycles is not None else 100
+    if context_length is None:
+        context_length = config.get("default_context_length")
+    unsloth_max_input_length = max_input_length
+    unsloth_load_in_4bit = load_in_4bit
+    use_deepspeed = False
     chat_template_path = config.get("chat_template_path")
-
     access_token = None
-    if token_from_file:
-        with open(ab_root_path / "token") as f:
-            access_token = f.readline()
 
     print(
         f'[DEBUG]Argument Information:\nSkip generation until Epoch: {skip_epoch}\nPath to saved LoRA Layers: {llm_path}')

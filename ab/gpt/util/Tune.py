@@ -660,6 +660,7 @@ def _evaluate_epoch(
     results = {"epoch": epoch}
 
     if exists(models_dir):
+        release_memory()
         if classification_mode:
             from ab.gpt.ClassificationEval import evaluate_epoch as cls_eval
 

@@ -158,7 +158,10 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
          min_selected_k=15, fallback_threshold=0.35, adaptive_threshold=False,
          novelty_check=True, resume_from_cycle=None, max_retries=3, use_optimized_training=True,
          use_agents=USE_AGENTS, use_predictor=USE_PREDICTOR, use_backbone=False,
-         classification_mode=False, mobile_deployment=False):
+         classification_mode=False, mobile_deployment=False,
+         mobile_reval_only=False,
+         mobile_min_quantized_accuracy=None, mobile_max_duration_ms=None,
+         mobile_score_tolerance=0.99, mobile_min_valid_models=5, mobile_delegate_priority="npu,gpu,cpu"):
 
     persist_llm_conf(llm_conf, enable_merge)
 
@@ -172,7 +175,7 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
         except ImportError as e:
             print(f"[ERROR] Pipeline mode requires ab.gpt.iterative_finetune: {e}")
             sys.exit(1)
-        pipeline = IterativeFinetuner(
+        pipeline_kwargs = dict(
             llm_conf=llm_conf,
             cycles=cycles,
             models_per_cycle=models_per_cycle,
@@ -187,6 +190,23 @@ def main(num_train_epochs=NUM_TRAIN_EPOCHS, lr_scheduler=LR_SCHEDULER, max_grad_
             use_optimized_training=use_optimized_training,
             num_train_epochs=num_train_epochs,
         )
+        if mobile_deployment:
+            pipeline_kwargs["mobile_min_quantized_accuracy"] = mobile_min_quantized_accuracy
+            pipeline_kwargs["mobile_max_duration_ms"] = mobile_max_duration_ms
+            pipeline_kwargs["mobile_score_tolerance"] = mobile_score_tolerance
+            pipeline_kwargs["mobile_min_valid_models"] = mobile_min_valid_models
+            pipeline_kwargs["mobile_delegate_priority"] = mobile_delegate_priority
+            if mobile_reval_only:
+                pipeline_kwargs["skip_mobile_seed_prep"] = True
+        pipeline = IterativeFinetuner(**pipeline_kwargs)
+        if mobile_deployment and mobile_reval_only:
+            cycle = resume_from_cycle or 1
+            result = pipeline.run_mobile_reval_cycle(cycle, clean=True)
+            if not result.get("success", False):
+                print(f"[ERROR] Mobile re-eval failed for cycle {cycle}: {result.get('error')}")
+                sys.exit(1)
+            print(f"Mobile re-eval cycle {cycle} complete.")
+            return
         pipeline.run()
         return  # Skip standalone training
 
@@ -563,6 +583,8 @@ if __name__ == '__main__':
                         help=f"Prompt batch size (default: {PROMPT_BATCH}).")
     parser.add_argument('--use_agents', action='store_true', default=USE_AGENTS,
                         help='Enable LangGraph multi-agent workflow (default: False).')
+    parser.add_argument('--no-use_agents', dest='use_agents', action='store_false',
+                        help='Disable LangGraph multi-agent workflow during fine-tuning.')
     parser.add_argument('--use_predictor', action='store_true', default=USE_PREDICTOR,
                         help='Enable predictor agent.')
     parser.add_argument('--use_backbone', action='store_true', default=False,
@@ -571,6 +593,18 @@ if __name__ == '__main__':
                         help='Enable classification-only mode (default: False).')
     parser.add_argument('--mobile_deployment', action='store_true', default=False,
                         help='Enable standalone mobile deployment pipeline extensions (default: False).')
+    parser.add_argument('--mobile_reval_only', action='store_true', default=False,
+                        help='[Mobile Pipeline] Re-run GPU eval + mobile for one cycle only (requires --mobile_deployment).')
+    parser.add_argument('--mobile_min_quantized_accuracy', type=float, default=None,
+                        help='[Mobile Pipeline] Minimum quantized accuracy required for selection (default: None).')
+    parser.add_argument('--mobile_max_duration_ms', type=float, default=None,
+                        help='[Mobile Pipeline] Maximum on-device duration (ms) allowed for selection (default: None).')
+    parser.add_argument('--mobile_score_tolerance', type=float, default=0.99,
+                        help='[Mobile Pipeline] Non-regression tolerance multiplier for cycle gate (default: 0.99).')
+    parser.add_argument('--mobile_min_valid_models', type=int, default=5,
+                        help='[Mobile Pipeline] Minimum valid mobile-scored models required to accept cycle (default: 5).')
+    parser.add_argument('--mobile_delegate_priority', type=str, default='npu,gpu,cpu',
+                        help='[Mobile Pipeline] Tie-break delegate priority for equal scores (default: npu,gpu,cpu).')
 
     args = parser.parse_args()
 

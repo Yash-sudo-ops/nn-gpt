@@ -14,6 +14,7 @@ import torch
 _AUX_GPU_TOKENS_ENV = "NNGPT_AUX_GPU_TOKENS"
 _TRAIN_GPU_TOKENS_ENV = "NNGPT_TRAIN_GPU_TOKENS"
 _LEGACY_REWARD_GPU_TOKENS_ENV = "NNGPT_REWARD_GPU_TOKENS"
+_REWARD_GPU_INDICES_ENV = "NNGPT_REWARD_GPU_INDICES"
 _NNEVAL_GPU_TOKENS_ENV = "NNGPT_NNEVAL_GPU_TOKENS"
 
 _NNEVAL_WORKER_POOL: Optional["_NNEvalWorkerPool"] = None
@@ -188,6 +189,8 @@ def _resolve_target_gpu_tokens(
     aux_gpu_tokens = _configured_cuda_device_tokens(_AUX_GPU_TOKENS_ENV)
     if aux_gpu_tokens is None:
         aux_gpu_tokens = _configured_cuda_device_tokens(_LEGACY_REWARD_GPU_TOKENS_ENV)
+    if aux_gpu_tokens is None:
+        aux_gpu_tokens = _configured_cuda_device_tokens(_REWARD_GPU_INDICES_ENV)
     if aux_gpu_tokens:
         tokens = [token for token in aux_gpu_tokens if token in visible_gpu_tokens]
         return tokens, "aux_gpu_tokens"
@@ -417,6 +420,7 @@ def _extract_accuracy(eval_results: Any) -> Tuple[Optional[str], Optional[float]
 
 def _execute_nneval_task(payload: Dict[str, Any]) -> Dict[str, Any]:
     from ab.gpt.util.Eval import Eval
+    from ab.gpt.util.eval_checkpoint import eval_checkpoint_path
 
     model_dir = str(payload["model_dir"])
     code_file = str(payload["code_file"])
@@ -434,7 +438,10 @@ def _execute_nneval_task(payload: Dict[str, Any]) -> Dict[str, Any]:
     epoch_limit_minutes = payload.get("epoch_limit_minutes")
     if epoch_limit_minutes not in (None, "", 0):
         evaluator.epoch_limit_minutes = epoch_limit_minutes
-    eval_results = evaluator.evaluate(code_file)
+    checkpoint_path = None
+    if payload.get("save_eval_checkpoint"):
+        checkpoint_path = payload.get("checkpoint_path") or str(eval_checkpoint_path(model_dir))
+    eval_results = evaluator.evaluate(code_file, checkpoint_path=checkpoint_path)
     checksum, accuracy = _extract_accuracy(eval_results)
     if accuracy is None:
         raise ValueError(f"Could not extract accuracy from evaluation results: {type(eval_results).__name__}")
@@ -1115,7 +1122,10 @@ def _persistent_nneval_worker_entry(conn, assigned_gpu: Optional[int], assigned_
                 }
             finally:
                 _clear_cuda_state()
-            result["worker_restart_requested"] = _is_fatal_cuda_worker_error(result.get("error"))
+            result["worker_restart_requested"] = (
+                bool(result.get("is_oom", False))
+                or _is_fatal_cuda_worker_error(result.get("error"))
+            )
             result["assigned_gpu"] = assigned_gpu
             result["worker_device"] = worker_device
             result["worker_slot"] = request.get("worker_slot")
